@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+# Original author Jared Lumpe
+# Modified by Michelle Scribner and Andrew Page
+
+### Preprocessed input file format examples
+###### species_taxon_filename
+#species_taxid,name,rank,parent_taxid,ncbi_taxid,gambit_taxid
+#10,Yellow black,species,1,10,10
+#11,Red white,species,1,11,11
+
+###### genome_assembly_metadata
+#uuid,assembly_filename,species_taxid,assembly_accession
+#1,path/to/sample1.fa,10,sample1
+#2,path/to/sample1_1.fa,10,sample1_1
+
+import argparse
+import uuid
+
+parser = argparse.ArgumentParser(
+    description = 'Generate a Gambit database. Requires preprocessed input files',
+    usage = 'gambitdb_create [options]',
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+# Required input files
+parser.add_argument('genome_assembly_metadata',  help='A CSV containing the assembly file and path, and the species taxon ID', type=str)
+parser.add_argument('species_taxon_filename', help='A CSV containing species taxonomy', type=str)
+parser.add_argument('signatures_filename', help='A signatures .h5 file created by gambit signatures', type=str)
+
+# optional input values
+parser.add_argument('--db_key',  help='Unique key for database, no spaces', default = 'organisation/database', type=str)
+parser.add_argument('--db_version',  help='Unique version, x.y.z', default = '1.0.0', type=str)
+parser.add_argument('--db_author',  help='Name of person who created the database', default = 'Jane Doe', type=str)
+parser.add_argument('--db_date',  help='Date database was created as YYYY-MM-DD', default = '2022-12-31', type=str)
+
+# Optional output file names that you probably want to leave as defaults
+parser.add_argument('--signatures_output_filename', '-s', help='Output filename for genome signatures', default = 'database.gs', type=str)
+parser.add_argument('--database_output_filename', '-g', help='Output filename for core database', default = 'database.gdb', type=str)
+parser.add_argument('--verbose', '-v', action='store_true', help='Turn on verbose output', default = False)
+options = parser.parse_args()
+
+
+import pandas as pd
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from gambit.db import ReferenceGenomeSet, Genome, AnnotatedGenome, Taxon
+from gambit.db.migrate import init_db
+from gambit.sigs import SignaturesMeta, load_signatures, dump_signatures, AnnotatedSignatures
+
+
+# load data
+genomes_df = pd.read_csv(options.genome_assembly_metadata, dtype=str)
+taxa_df = pd.read_csv(options.species_taxon_filename, dtype=str)
+taxa_df = taxa_df.fillna('')
+
+# Create databawse
+engine = create_engine('sqlite:///' + options.database_output_filename, echo=options.verbose)
+init_db(engine)
+Session = sessionmaker(engine)
+session = Session()
+
+# ### Genome set
+# 
+# `ReferenceGenomeSet` basically encompasses the concept of a "gambit database," but because it is just a row in a table you can technically have more than one. The CLI commands expect there to be just one per SQLite file, though.
+gset = ReferenceGenomeSet(
+    key=options.db_key,
+    version=options.db_version,
+    name=str(options.db_key)+ ' version '+ str(options.db_version) +' database',
+    description=str(options.db_key)+ ' version '+ str(options.db_version) +' database',
+    # This is arbitrary JSON data. There's no set schema for it currently.
+    extra=dict(
+        author=options.db_author,
+        date=options.db_date,
+    ),
+)
+session.add(gset)
+session.commit()
+
+#### Taxa
+taxa = dict()
+
+for row in taxa_df.itertuples():
+    taxon = Taxon(
+        key=str(uuid.uuid4()),
+        name=row.name,
+        rank=row.rank,
+        description='',
+        distance_threshold=row.diameter,
+        # if 1, GAMBIT will assign samples to this taxa, set subspecies to 0
+        report=(0 if row.rank == "" else 1), 
+        genome_set=gset,
+        # Compare the values in the 'gambit_taxid' column of the DataFrame to the 'parent_taxid' value of the current row. If there is a match, return the index of the row in the DataFrame. If there is no match, return an empty string.
+        parent_id=("" if row.parent_taxid == "" else taxa_df.index[taxa_df['gambit_taxid'] == row.parent_taxid].tolist()[0] + 1), 
+        ncbi_id=row.ncbi_taxid,
+    )
+    taxa[row.species_taxid] = taxon
+    session.add(taxon)
+    
+session.commit()
+
+# ### Genomes
+for row in genomes_df.itertuples():
+    taxon = taxa[row.species_taxid]
+    
+    genome = Genome(
+        key=row.assembly_filename,
+        description='',
+        ncbi_db='assembly',
+        ncbi_id=row.uuid,
+        genbank_acc=row.assembly_accession,
+    )
+    session.add(genome)
+    
+    ag = AnnotatedGenome(
+        genome=genome,
+        genome_set=gset,
+        taxon=taxon,
+        organism=taxon.name,
+    )
+    session.add(ag)
+    
+session.commit()
+
+# ### Signatures
+
+meta = SignaturesMeta(
+    id=options.db_key,
+    version=options.db_version,
+    name=str(options.db_key)+ ' version '+ str(options.db_version) +' database',
+    description=str(options.db_key)+ ' version '+ str(options.db_version) +' database',
+    id_attr='genbank_acc',
+)
+
+with load_signatures(options.signatures_filename) as src:
+    out_sigs = AnnotatedSignatures(src, src.ids, meta)
+    dump_signatures(options.signatures_output_filename, out_sigs)
