@@ -2,6 +2,7 @@ import sys
 from typing import Optional, TextIO
 
 import click
+import h5py
 
 from . import common
 from .root import cli
@@ -13,6 +14,7 @@ from gambit.util.progress import progress_config
 from gambit.cluster import dump_dmat_csv
 from gambit._cython.threads import omp_set_num_threads
 from gambit.kmers import DEFAULT_KMERSPEC
+from gambit.metric_improved import jaccarddist_matrix_improved, jaccarddist_pairwise_improved
 
 
 def fmt_kspec(kspec):
@@ -35,6 +37,9 @@ def fmt_kspec(kspec):
 @common.cores_param()
 @common.progress_param()
 @click.option('--dump-params', is_flag=True, hidden=True)
+@click.option('--improved', is_flag=True, help='Use memory-efficient implementation')
+@click.option('--batch-size', type=int, default=1000, help='Batch size for improved implementation')
+@click.option('--chunk-size', type=int, default=100, help='Chunk size for improved implementation')
 @click.pass_context
 def dist_cmd(ctx: click.Context,
              k: Optional[int],
@@ -53,6 +58,9 @@ def dist_cmd(ctx: click.Context,
              progress: bool,
              cores: Optional[int],
              dump_params: bool,
+             improved: bool,
+             batch_size: int,
+             chunk_size: int,
              ):
 	"""Calculate the GAMBIT distances between a set of query geneomes and a set of reference genomes.
 
@@ -145,14 +153,44 @@ def dist_cmd(ctx: click.Context,
 		omp_set_num_threads(cores)
 
 	if square:
-		dmat = jaccarddist_pairwise(query_sigs, progress=dist_pconf)
-
+		# For square matrix, use the same signatures for both queries and refs
+		ref_sigs = query_sigs
 	else:
 		if ref_sigs is None:
 			ref_pconf = progress_config('click', desc='Calculating reference genome signatures') if len(ref_files) > 1 else None
 			ref_sigs = calc_file_signatures(kspec, ref_files, progress=ref_pconf)
 
-		dmat = jaccarddist_matrix(query_sigs, ref_sigs, progress=dist_pconf)
-
-	# Output
-	dump_dmat_csv(output, dmat, query_ids, ref_ids)  # TODO different output formats
+	if improved:
+		# Use improved implementation
+		if square:
+			jaccarddist_pairwise_improved(
+				query_sigs,
+				output_file=output,
+				batch_size=batch_size,
+				chunk_size=chunk_size,
+				progress=dist_pconf
+			)
+		else:
+			jaccarddist_matrix_improved(
+				query_sigs,
+				ref_sigs,
+				output_file=output,
+				batch_size=batch_size,
+				chunk_size=chunk_size,
+				progress=dist_pconf
+			)
+		
+		# Convert HDF5 output to CSV if needed
+		if output.endswith('.csv'):
+			with h5py.File(output, 'r') as h5_file:
+				dmat = h5_file['distances'][:]
+			dump_dmat_csv(output, dmat, query_ids, ref_ids)
+	else:
+		# Use original implementation
+		if square:
+			dmat = jaccarddist_pairwise(query_sigs, progress=dist_pconf)
+		else:
+			dmat = jaccarddist_matrix(query_sigs, ref_sigs, progress=dist_pconf)
+		
+		# Output
+		dump_dmat_csv(output, dmat, query_ids, ref_ids)
