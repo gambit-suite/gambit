@@ -195,11 +195,22 @@ class BatchedDistanceCalculator:
         total_queries = len(queries)
         total_refs = len(refs)
         
+        # Check if this is a square matrix (self-comparison)
+        is_square = total_queries == total_refs and queries is refs
+        if is_square:
+            print("\nDetected square matrix (self-comparison) - using symmetry optimization")
+            # For square matrices, we only need to calculate the upper triangle
+            total_comparisons = (total_queries * (total_queries - 1)) // 2 + total_queries
+        else:
+            total_comparisons = total_queries * total_refs
+        
         # Print informative messages about the dataset and configuration
-        print(f"\nDataset Information:")
+        print("\nDataset Information:")
         print(f"  Number of query sequences: {total_queries:,}")
         print(f"  Number of reference sequences: {total_refs:,}")
-        print(f"  Total comparisons: {total_queries * total_refs:,}")
+        print(f"  Total comparisons: {total_comparisons:,}")
+        if is_square:
+            print("  Using symmetry optimization (50% fewer calculations)")
         
         # For small datasets, use the original in-memory implementation
         if total_queries < SMALL_DATASET_THRESHOLD and total_refs < SMALL_DATASET_THRESHOLD:
@@ -232,27 +243,79 @@ class BatchedDistanceCalculator:
                     batch_end = min(i + self.batch_size, total_queries)
                     batch_queries = queries[i:batch_end]
                     
-                    # Process this batch
-                    self._process_batch(batch_queries, refs, i, temp_file)
+                    # For square matrices, only process the upper triangle
+                    if is_square:
+                        # Adjust the reference range for this batch to only include upper triangle
+                        start_ref = i  # Start from diagonal
+                        refs_subset = refs[start_ref:]
+                        self._process_batch_symmetric(batch_queries, refs_subset, i, start_ref, temp_file)
+                    else:
+                        self._process_batch(batch_queries, refs, i, temp_file)
                     
                     # Update progress less frequently for large datasets
                     if i % update_interval == 0:
                         pbar.increment(len(batch_queries))
             
             # Combine results into final output file
-            self._combine_results(temp_file, output_file, total_queries, total_refs)
+            self._combine_results(temp_file, output_file, total_queries, total_refs, is_square)
             
         finally:
             # Clean up temporary file
             temp_file.close()
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    def _process_batch_symmetric(self,
+                               queries: Sequence[KmerSignature],
+                               refs: SignatureArray,
+                               start_idx: int,
+                               start_ref: int,
+                               out_file: h5py.File) -> None:
+        """Process a batch of query sequences against reference sequences for symmetric matrix."""
+        batch_size = len(queries)
+        total_refs = len(refs)
+        
+        # Create dataset for this batch if it doesn't exist
+        if f'batch_{start_idx}' not in out_file:
+            out_file.create_dataset(
+                f'batch_{start_idx}',
+                shape=(batch_size, total_refs),
+                dtype=SCORE_DTYPE,
+                chunks=(min(100, batch_size), min(self.chunk_size, total_refs)),
+                compression='gzip' if total_refs > MEMORY_MAPPED_THRESHOLD else None
+            )
+        
+        # Process queries in parallel chunks
+        query_chunk_size = min(100, batch_size)
+        for i in range(0, batch_size, query_chunk_size):
+            query_chunk_end = min(i + query_chunk_size, batch_size)
+            query_chunk = queries[i:query_chunk_end]
+            
+            # Pre-allocate output array for the chunk
+            chunk_out = np.empty((len(query_chunk), total_refs), SCORE_DTYPE)
+            
+            # Process reference sequences in chunks
+            for j in range(0, total_refs, self.chunk_size):
+                chunk_end = min(j + self.chunk_size, total_refs)
+                chunk_refs = refs[j:chunk_end]
                 
+                values = _cast_sigs_array(chunk_refs.values)
+                bounds = chunk_refs.bounds.astype(BOUNDS_DTYPE, copy=False)
+                
+                # Process each query in the chunk
+                for k, query in enumerate(query_chunk):
+                    query = _cast_sigs_array(query)
+                    _cmetric._jaccarddist_parallel(query, values, bounds, chunk_out[k, j:chunk_end])
+            
+            # Write chunk results to HDF5 file
+            out_file[f'batch_{start_idx}'][i:query_chunk_end] = chunk_out
+
     def _combine_results(self,
                         temp_file: h5py.File,
                         output_file: str,
                         total_queries: int,
-                        total_refs: int) -> None:
+                        total_refs: int,
+                        is_square: bool = False) -> None:
         """Combine batch results into final output file."""
         with h5py.File(output_file, 'w') as out_file:
             # Create final dataset
@@ -264,10 +327,21 @@ class BatchedDistanceCalculator:
                 compression='gzip' if total_refs > MEMORY_MAPPED_THRESHOLD else None
             )
             
-            # Copy data from temporary file
-            for i in range(0, total_queries, self.batch_size):
-                batch_end = min(i + self.batch_size, total_queries)
-                out_file['distances'][i:batch_end] = temp_file[f'batch_{i}'][:]
+            if is_square:
+                # For square matrices, copy upper triangle and mirror to lower triangle
+                for i in range(0, total_queries, self.batch_size):
+                    batch_end = min(i + self.batch_size, total_queries)
+                    batch_data = temp_file[f'batch_{i}'][:]
+                    out_file['distances'][i:batch_end, i:] = batch_data
+                    # Mirror the upper triangle to the lower triangle
+                    for j in range(i, batch_end):
+                        for k in range(j + 1, total_refs):
+                            out_file['distances'][k, j] = out_file['distances'][j, k]
+            else:
+                # For non-square matrices, just copy the data
+                for i in range(0, total_queries, self.batch_size):
+                    batch_end = min(i + self.batch_size, total_queries)
+                    out_file['distances'][i:batch_end] = temp_file[f'batch_{i}'][:]
 
 def jaccarddist_matrix_improved(queries: Sequence[KmerSignature],
                               refs: Sequence[KmerSignature],
