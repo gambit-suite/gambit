@@ -210,6 +210,21 @@ def dist_cmd(ctx: click.Context,
 		if str(output).endswith('.csv'):
 			with h5py.File(output, 'r') as h5_file:
 				dmat = h5_file['distances'][:]
+				# If max_sequences was used, we need to select the corresponding IDs
+				if max_sequences is not None:
+					import random
+					random.seed(42)  # Use same seed as in metric_improved.py
+					if square:
+						# For square matrix, use same indices for both queries and refs
+						selected_indices = sorted(random.sample(range(len(query_ids)), max_sequences))
+						query_ids = [query_ids[i] for i in selected_indices]
+						ref_ids = query_ids
+					else:
+						# For rectangular matrix, select indices for both queries and refs
+						query_indices = sorted(random.sample(range(len(query_ids)), max_sequences))
+						ref_indices = sorted(random.sample(range(len(ref_ids)), max_sequences))
+						query_ids = [query_ids[i] for i in query_indices]
+						ref_ids = [ref_ids[i] for i in ref_indices]
 			dump_dmat_csv(output, dmat, query_ids, ref_ids)
 	else:
 		# Use original implementation
