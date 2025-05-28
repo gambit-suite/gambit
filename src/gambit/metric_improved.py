@@ -195,8 +195,15 @@ class BatchedDistanceCalculator:
         total_queries = len(queries)
         total_refs = len(refs)
         
+        # Print informative messages about the dataset and configuration
+        print(f"\nDataset Information:")
+        print(f"  Number of query sequences: {total_queries:,}")
+        print(f"  Number of reference sequences: {total_refs:,}")
+        print(f"  Total comparisons: {total_queries * total_refs:,}")
+        
         # For small datasets, use the original in-memory implementation
         if total_queries < SMALL_DATASET_THRESHOLD and total_refs < SMALL_DATASET_THRESHOLD:
+            print("\nUsing in-memory implementation for small dataset")
             dmat = jaccarddist_matrix(queries, refs, progress=progress)
             with h5py.File(output_file, 'w') as f:
                 f.create_dataset('distances', data=dmat)
@@ -205,8 +212,17 @@ class BatchedDistanceCalculator:
         # Optimize batch sizes based on dataset size
         self.batch_size, self.chunk_size = _optimize_batch_sizes(total_queries, total_refs)
         
+        print(f"\nBatch Configuration:")
+        print(f"  Batch size: {self.batch_size:,} queries per batch")
+        print(f"  Chunk size: {self.chunk_size:,} references per chunk")
+        print(f"  Number of batches: {(total_queries + self.batch_size - 1) // self.batch_size:,}")
+        print(f"  Number of chunks per batch: {(total_refs + self.chunk_size - 1) // self.chunk_size:,}")
+        
         # Create temporary file for intermediate results
         temp_file, temp_path = self._create_temp_file(total_queries, total_refs, output_file)
+        print(f"\nTemporary storage:")
+        print(f"  Location: {self.temp_location}")
+        print(f"  Path: {temp_path}")
         
         try:
             # Process queries in batches with less frequent progress updates
