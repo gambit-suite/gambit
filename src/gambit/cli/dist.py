@@ -1,5 +1,5 @@
 import sys
-from typing import Optional, TextIO
+from typing import Optional, TextIO, Literal
 
 import click
 import h5py
@@ -40,6 +40,13 @@ def fmt_kspec(kspec):
 @click.option('--improved', is_flag=True, help='Use memory-efficient implementation')
 @click.option('--batch-size', type=int, default=1000, help='Batch size for improved implementation')
 @click.option('--chunk-size', type=int, default=100, help='Chunk size for improved implementation')
+@click.option('--temp-location', 
+              type=click.Choice(['output_dir', 'ram', 'system']), 
+              default='system',
+              help='Where to store temporary files: output_dir (same as output), ram (RAM-based filesystem), or system (default temp directory)')
+@click.option('--temp-dir', 
+              type=common.filepath(writable=True),
+              help='Custom directory to store temporary files (overrides --temp-location)')
 @click.pass_context
 def dist_cmd(ctx: click.Context,
              k: Optional[int],
@@ -61,9 +68,17 @@ def dist_cmd(ctx: click.Context,
              improved: bool,
              batch_size: int,
              chunk_size: int,
+             temp_location: Literal['output_dir', 'ram', 'system'],
+             temp_dir: Optional[str],
              ):
 	"""Calculate the GAMBIT distances between a set of query geneomes and a set of reference genomes.
 
+	The --temp-location option controls where temporary files are stored during processing:
+	- output_dir: Store in same directory as output file
+	- ram: Store in RAM-based filesystem (e.g. /dev/shm on Linux) for faster processing
+	- system: Use system's default temp directory (default)
+	
+	Alternatively, use --temp-dir to specify a custom directory.
 	"""
 	common.check_params_group(ctx, ['q', 'ql', 'qs'], True, True)
 	common.check_params_group(ctx, ['r', 'rl', 'rs', 'use_db', 'square'], True, True)
@@ -168,6 +183,7 @@ def dist_cmd(ctx: click.Context,
 				output_file=output,
 				batch_size=batch_size,
 				chunk_size=chunk_size,
+				temp_location=temp_location,
 				progress=dist_pconf
 			)
 		else:
@@ -177,6 +193,7 @@ def dist_cmd(ctx: click.Context,
 				output_file=output,
 				batch_size=batch_size,
 				chunk_size=chunk_size,
+				temp_location=temp_location,
 				progress=dist_pconf
 			)
 		
