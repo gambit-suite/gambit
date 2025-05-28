@@ -367,7 +367,8 @@ def jaccarddist_matrix_improved(queries: Sequence[KmerSignature],
                               batch_size: int = DEFAULT_BATCH_SIZE,
                               chunk_size: int = DEFAULT_CHUNK_SIZE,
                               temp_location: TempLocation = 'system',
-                              progress = None) -> None:
+                              progress = None,
+                              max_sequences: Optional[int] = None) -> None:
     """
     Memory-efficient implementation of jaccarddist_matrix.
     
@@ -390,7 +391,31 @@ def jaccarddist_matrix_improved(queries: Sequence[KmerSignature],
         - 'system': Use system's default temp directory
     progress : optional
         Progress bar configuration
+    max_sequences : int, optional
+        Maximum number of sequences to process. If provided, will randomly select
+        this many sequences from the input.
     """
+    # Select subset of sequences if max_sequences is provided
+    if max_sequences is not None:
+        import random
+        total_queries = len(queries)
+        total_refs = len(refs)
+        
+        if max_sequences < total_queries:
+            print(f"\nSelecting {max_sequences:,} random sequences from {total_queries:,} total sequences")
+            # Use fixed seed for reproducibility
+            random.seed(42)
+            # Get random indices
+            selected_indices = sorted(random.sample(range(total_queries), max_sequences))
+            # Select sequences
+            queries = [queries[i] for i in selected_indices]
+            # If it's a self-comparison, use the same indices for refs
+            if queries is refs:
+                refs = queries
+            else:
+                refs = [refs[i] for i in selected_indices]
+            print(f"Selected sequences: {selected_indices[:5]}... (and {len(selected_indices)-5} more)")
+    
     calculator = BatchedDistanceCalculator(
         batch_size=batch_size,
         chunk_size=chunk_size,
@@ -403,7 +428,8 @@ def jaccarddist_pairwise_improved(sigs: Sequence[KmerSignature],
                                 batch_size: int = DEFAULT_BATCH_SIZE,
                                 chunk_size: int = DEFAULT_CHUNK_SIZE,
                                 temp_location: TempLocation = 'system',
-                                progress = None) -> None:
+                                progress = None,
+                                max_sequences: Optional[int] = None) -> None:
     """
     Memory-efficient implementation of jaccarddist_pairwise.
     
@@ -418,13 +444,28 @@ def jaccarddist_pairwise_improved(sigs: Sequence[KmerSignature],
     chunk_size : int
         Number of sequences to process in each chunk
     temp_location : {'output_dir', 'ram', 'system'}
-        Where to store temporary files:
-        - 'output_dir': Store in same directory as output file
-        - 'ram': Store in RAM-based filesystem (e.g. /dev/shm on Linux)
-        - 'system': Use system's default temp directory
+        Where to store temporary files
     progress : optional
         Progress bar configuration
+    max_sequences : int, optional
+        Maximum number of sequences to process. If provided, will randomly select
+        this many sequences from the input.
     """
+    # Select subset of sequences if max_sequences is provided
+    if max_sequences is not None:
+        import random
+        total_sigs = len(sigs)
+        
+        if max_sequences < total_sigs:
+            print(f"\nSelecting {max_sequences:,} random sequences from {total_sigs:,} total sequences")
+            # Use fixed seed for reproducibility
+            random.seed(42)
+            # Get random indices
+            selected_indices = sorted(random.sample(range(total_sigs), max_sequences))
+            # Select sequences
+            sigs = [sigs[i] for i in selected_indices]
+            print(f"Selected sequences: {selected_indices[:5]}... (and {len(selected_indices)-5} more)")
+    
     calculator = BatchedDistanceCalculator(
         batch_size=batch_size,
         chunk_size=chunk_size,

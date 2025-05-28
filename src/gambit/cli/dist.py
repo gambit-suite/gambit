@@ -47,6 +47,9 @@ def fmt_kspec(kspec):
 @click.option('--temp-dir', 
               type=common.filepath(writable=True),
               help='Custom directory to store temporary files (overrides --temp-location)')
+@click.option('--max-sequences', 
+              type=int,
+              help='Maximum number of sequences to process. If provided, will randomly select this many sequences from the input.')
 @click.pass_context
 def dist_cmd(ctx: click.Context,
              k: Optional[int],
@@ -70,6 +73,7 @@ def dist_cmd(ctx: click.Context,
              chunk_size: int,
              temp_location: Literal['output_dir', 'ram', 'system'],
              temp_dir: Optional[str],
+             max_sequences: Optional[int],
              ):
 	"""Calculate the GAMBIT distances between a set of query geneomes and a set of reference genomes.
 
@@ -79,6 +83,9 @@ def dist_cmd(ctx: click.Context,
 	- system: Use system's default temp directory (default)
 	
 	Alternatively, use --temp-dir to specify a custom directory.
+
+	The --max-sequences option allows you to process a subset of the input sequences,
+	which can be useful for testing or when working with very large datasets.
 	"""
 	common.check_params_group(ctx, ['q', 'ql', 'qs'], True, True)
 	common.check_params_group(ctx, ['r', 'rl', 'rs', 'use_db', 'square'], True, True)
@@ -184,7 +191,8 @@ def dist_cmd(ctx: click.Context,
 				batch_size=batch_size,
 				chunk_size=chunk_size,
 				temp_location=temp_location,
-				progress=dist_pconf
+				progress=dist_pconf,
+				max_sequences=max_sequences
 			)
 		else:
 			jaccarddist_matrix_improved(
@@ -194,7 +202,8 @@ def dist_cmd(ctx: click.Context,
 				batch_size=batch_size,
 				chunk_size=chunk_size,
 				temp_location=temp_location,
-				progress=dist_pconf
+				progress=dist_pconf,
+				max_sequences=max_sequences
 			)
 		
 		# Convert HDF5 output to CSV if needed
