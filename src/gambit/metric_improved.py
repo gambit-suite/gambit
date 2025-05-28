@@ -105,19 +105,25 @@ class BatchedDistanceCalculator:
         temp_dir = self._get_temp_dir(output_file)
         os.makedirs(temp_dir, exist_ok=True)
         
-        # Generate unique temp file name
         temp_name = f'gambit_dist_{os.getpid()}_{id(self)}.h5'
         temp_path = os.path.join(temp_dir, temp_name)
         
-        # Use memory-mapped files for small datasets
+        # Use memory-mapped files for small/medium datasets
         if total_queries * total_refs < MEMORY_MAPPED_THRESHOLD:
             return h5py.File(temp_path, 'w', driver='core', backing_store=False), temp_path
-            
-        # For RAM-based storage, use memory-mapped files
+        
+        # For RAM-based storage, use memory-mapped files with compression
         if self.temp_location == 'ram':
-            return h5py.File(temp_path, 'w', driver='core', backing_store=True), temp_path
-            
-        return h5py.File(temp_path, 'w'), temp_path
+            return h5py.File(temp_path, 'w', driver='core', backing_store=True, 
+                            libver='latest',  # Use latest HDF5 version
+                            rdcc_nslots=100000,  # Increase cache slots
+                            rdcc_nbytes=1024*1024*1024), temp_path  # 1GB cache
+        
+        # For system storage, use compression and caching
+        return h5py.File(temp_path, 'w', 
+                        libver='latest',
+                        rdcc_nslots=100000,
+                        rdcc_nbytes=1024*1024*1024), temp_path
         
     def _process_batch(self,
                       queries: Sequence[KmerSignature],
@@ -134,14 +140,18 @@ class BatchedDistanceCalculator:
                 f'batch_{start_idx}',
                 shape=(batch_size, total_refs),
                 dtype=SCORE_DTYPE,
-                chunks=(1, min(self.chunk_size, total_refs)),
+                chunks=(min(100, batch_size), min(self.chunk_size, total_refs)),  # Larger chunks
                 compression='gzip' if total_refs > MEMORY_MAPPED_THRESHOLD else None
             )
         
-        # Process each query in the batch
-        for i, query in enumerate(queries):
-            query = _cast_sigs_array(query)
-            out = np.empty(total_refs, SCORE_DTYPE)
+        # Process queries in parallel chunks
+        query_chunk_size = min(100, batch_size)  # Process 100 queries at a time
+        for i in range(0, batch_size, query_chunk_size):
+            query_chunk_end = min(i + query_chunk_size, batch_size)
+            query_chunk = queries[i:query_chunk_end]
+            
+            # Pre-allocate output array for the chunk
+            chunk_out = np.empty((len(query_chunk), total_refs), SCORE_DTYPE)
             
             # Process reference sequences in chunks
             for j in range(0, total_refs, self.chunk_size):
@@ -151,11 +161,13 @@ class BatchedDistanceCalculator:
                 values = _cast_sigs_array(chunk_refs.values)
                 bounds = chunk_refs.bounds.astype(BOUNDS_DTYPE, copy=False)
                 
-                # Calculate distances for this chunk
-                _cmetric._jaccarddist_parallel(query, values, bounds, out[j:chunk_end])
+                # Process each query in the chunk
+                for k, query in enumerate(query_chunk):
+                    query = _cast_sigs_array(query)
+                    _cmetric._jaccarddist_parallel(query, values, bounds, chunk_out[k, j:chunk_end])
             
-            # Write results to HDF5 file
-            out_file[f'batch_{start_idx}'][i] = out
+            # Write chunk results to HDF5 file
+            out_file[f'batch_{start_idx}'][i:query_chunk_end] = chunk_out
             
     def calculate_distances(self,
                           queries: Sequence[KmerSignature],
@@ -197,7 +209,8 @@ class BatchedDistanceCalculator:
         temp_file, temp_path = self._create_temp_file(total_queries, total_refs, output_file)
         
         try:
-            # Process queries in batches
+            # Process queries in batches with less frequent progress updates
+            update_interval = max(1, total_queries // 100)  # Update progress every 1%
             with get_progress(progress, total=total_queries, desc='Calculating distances') as pbar:
                 for i in range(0, total_queries, self.batch_size):
                     batch_end = min(i + self.batch_size, total_queries)
@@ -205,8 +218,11 @@ class BatchedDistanceCalculator:
                     
                     # Process this batch
                     self._process_batch(batch_queries, refs, i, temp_file)
-                    pbar.increment(len(batch_queries))
                     
+                    # Update progress less frequently for large datasets
+                    if i % update_interval == 0:
+                        pbar.increment(len(batch_queries))
+            
             # Combine results into final output file
             self._combine_results(temp_file, output_file, total_queries, total_refs)
             
