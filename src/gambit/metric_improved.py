@@ -214,11 +214,12 @@ class BatchedDistanceCalculator:
                 f.create_dataset('distances', data=dmat)
             return
             
-        # Optimize batch sizes based on dataset size
-        print("\nOptimizing batch sizes...")
-        self.batch_size, self.chunk_size = _optimize_batch_sizes(total_queries, total_refs)
+        # Only optimize batch sizes if they weren't explicitly set by the user
+        if self.batch_size == DEFAULT_BATCH_SIZE and self.chunk_size == DEFAULT_CHUNK_SIZE:
+            print("\nOptimizing batch sizes...")
+            self.batch_size, self.chunk_size = _optimize_batch_sizes(total_queries, total_refs)
         
-        print(f"\nBatch Configuration:")
+        print("\nBatch Configuration:")
         print(f"  Batch size: {self.batch_size:,} queries per batch")
         print(f"  Chunk size: {self.chunk_size:,} references per chunk")
         print(f"  Number of batches: {(total_queries + self.batch_size - 1) // self.batch_size:,}")
