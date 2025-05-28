@@ -10,11 +10,16 @@ from pathlib import Path
 import gambit._cython.metric as _cmetric
 from gambit.sigs.base import KmerSignature, SignatureArray, BOUNDS_DTYPE
 from gambit.util.progress import get_progress
+from gambit.metric import jaccarddist_matrix, jaccarddist_pairwise
 
 # Constants
 SCORE_DTYPE = np.dtype(np.float32)
 DEFAULT_BATCH_SIZE = 1000
 DEFAULT_CHUNK_SIZE = 100
+
+# Size thresholds for implementation selection
+SMALL_DATASET_THRESHOLD = 1000  # Number of sequences below which to use in-memory implementation
+MEMORY_MAPPED_THRESHOLD = 5000  # Number of sequences below which to use memory-mapped files
 
 def _cast_sigs_array(arr: np.ndarray) -> np.ndarray:
     """Convert signature array to proper data type for Cython metric code."""
@@ -25,6 +30,23 @@ def _cast_sigs_array(arr: np.ndarray) -> np.ndarray:
         new_dt = np.dtype(f'u{dt.itemsize}')
         return arr.view(new_dt)
     raise ValueError(f'Invalid dtype for k-mer coordinate array: {dt.str}')
+
+def _optimize_batch_sizes(total_queries: int, total_refs: int) -> Tuple[int, int]:
+    """Optimize batch and chunk sizes based on dataset size."""
+    # For very small datasets, use smaller batches
+    if total_queries < 100:
+        batch_size = max(10, total_queries)
+        chunk_size = max(10, total_refs)
+    # For medium datasets, use moderate batch sizes
+    elif total_queries < 1000:
+        batch_size = max(100, total_queries // 10)
+        chunk_size = max(50, total_refs // 10)
+    # For large datasets, use default sizes
+    else:
+        batch_size = DEFAULT_BATCH_SIZE
+        chunk_size = DEFAULT_CHUNK_SIZE
+    
+    return batch_size, chunk_size
 
 class BatchedDistanceCalculator:
     """Memory-efficient calculator for Jaccard distances between large sets of sequences."""
@@ -49,9 +71,13 @@ class BatchedDistanceCalculator:
         self.chunk_size = chunk_size
         self.temp_dir = temp_dir or tempfile.gettempdir()
         
-    def _create_temp_file(self) -> Tuple[h5py.File, str]:
+    def _create_temp_file(self, total_queries: int, total_refs: int) -> Tuple[h5py.File, str]:
         """Create a temporary HDF5 file for storing intermediate results."""
         temp_path = os.path.join(self.temp_dir, f'gambit_dist_{os.getpid()}.h5')
+        
+        # Use memory-mapped files for small datasets
+        if total_queries * total_refs < MEMORY_MAPPED_THRESHOLD:
+            return h5py.File(temp_path, 'w', driver='core', backing_store=False), temp_path
         return h5py.File(temp_path, 'w'), temp_path
         
     def _process_batch(self,
@@ -70,7 +96,7 @@ class BatchedDistanceCalculator:
                 shape=(batch_size, total_refs),
                 dtype=SCORE_DTYPE,
                 chunks=(1, min(self.chunk_size, total_refs)),
-                compression='gzip'
+                compression='gzip' if total_refs > MEMORY_MAPPED_THRESHOLD else None
             )
         
         # Process each query in the batch
@@ -118,8 +144,18 @@ class BatchedDistanceCalculator:
         total_queries = len(queries)
         total_refs = len(refs)
         
+        # For small datasets, use the original in-memory implementation
+        if total_queries < SMALL_DATASET_THRESHOLD and total_refs < SMALL_DATASET_THRESHOLD:
+            dmat = jaccarddist_matrix(queries, refs, progress=progress)
+            with h5py.File(output_file, 'w') as f:
+                f.create_dataset('distances', data=dmat)
+            return
+            
+        # Optimize batch sizes based on dataset size
+        self.batch_size, self.chunk_size = _optimize_batch_sizes(total_queries, total_refs)
+        
         # Create temporary file for intermediate results
-        temp_file, temp_path = self._create_temp_file()
+        temp_file, temp_path = self._create_temp_file(total_queries, total_refs)
         
         try:
             # Process queries in batches
@@ -130,7 +166,7 @@ class BatchedDistanceCalculator:
                     
                     # Process this batch
                     self._process_batch(batch_queries, refs, i, temp_file)
-                    pbar.update(len(batch_queries))
+                    pbar.increment(len(batch_queries))
                     
             # Combine results into final output file
             self._combine_results(temp_file, output_file, total_queries, total_refs)
@@ -154,7 +190,7 @@ class BatchedDistanceCalculator:
                 shape=(total_queries, total_refs),
                 dtype=SCORE_DTYPE,
                 chunks=(1, min(self.chunk_size, total_refs)),
-                compression='gzip'
+                compression='gzip' if total_refs > MEMORY_MAPPED_THRESHOLD else None
             )
             
             # Copy data from temporary file

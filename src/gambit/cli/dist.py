@@ -181,7 +181,7 @@ def dist_cmd(ctx: click.Context,
 			)
 		
 		# Convert HDF5 output to CSV if needed
-		if output.endswith('.csv'):
+		if str(output).endswith('.csv'):
 			with h5py.File(output, 'r') as h5_file:
 				dmat = h5_file['distances'][:]
 			dump_dmat_csv(output, dmat, query_ids, ref_ids)
