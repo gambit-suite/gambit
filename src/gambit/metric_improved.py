@@ -2,7 +2,8 @@
 
 import os
 import tempfile
-from typing import Sequence, Optional, Tuple, Union
+import shutil
+from typing import Sequence, Optional, Tuple, Union, Literal
 import numpy as np
 import h5py
 from pathlib import Path
@@ -20,6 +21,9 @@ DEFAULT_CHUNK_SIZE = 100
 # Size thresholds for implementation selection
 SMALL_DATASET_THRESHOLD = 1000  # Number of sequences below which to use in-memory implementation
 MEMORY_MAPPED_THRESHOLD = 5000  # Number of sequences below which to use memory-mapped files
+
+# Temp file location types
+TempLocation = Literal['output_dir', 'ram', 'system']
 
 def _cast_sigs_array(arr: np.ndarray) -> np.ndarray:
     """Convert signature array to proper data type for Cython metric code."""
@@ -54,6 +58,7 @@ class BatchedDistanceCalculator:
     def __init__(self, 
                  batch_size: int = DEFAULT_BATCH_SIZE,
                  chunk_size: int = DEFAULT_CHUNK_SIZE,
+                 temp_location: TempLocation = 'system',
                  temp_dir: Optional[str] = None):
         """
         Initialize the calculator.
@@ -64,20 +69,54 @@ class BatchedDistanceCalculator:
             Number of query sequences to process in each batch
         chunk_size : int
             Number of reference sequences to process in each chunk
+        temp_location : {'output_dir', 'ram', 'system'}
+            Where to store temporary files:
+            - 'output_dir': Store in same directory as output file
+            - 'ram': Store in RAM-based filesystem (e.g. /dev/shm on Linux)
+            - 'system': Use system's default temp directory
         temp_dir : str, optional
-            Directory to store temporary files. If None, uses system temp directory
+            Custom directory to store temporary files. If provided, overrides temp_location.
         """
         self.batch_size = batch_size
         self.chunk_size = chunk_size
-        self.temp_dir = temp_dir or tempfile.gettempdir()
+        self.temp_location = temp_location
+        self.temp_dir = temp_dir
         
-    def _create_temp_file(self, total_queries: int, total_refs: int) -> Tuple[h5py.File, str]:
+    def _get_temp_dir(self, output_file: str) -> str:
+        """Get the appropriate temporary directory based on configuration."""
+        if self.temp_dir is not None:
+            return self.temp_dir
+            
+        if self.temp_location == 'output_dir':
+            return os.path.dirname(os.path.abspath(output_file))
+        elif self.temp_location == 'ram':
+            # Try to use RAM-based filesystem if available
+            ram_dirs = ['/dev/shm', '/run/shm']  # Common RAM-based filesystem locations
+            for ram_dir in ram_dirs:
+                if os.path.exists(ram_dir) and os.access(ram_dir, os.W_OK):
+                    return ram_dir
+            # Fall back to system temp if RAM-based location not available
+            return tempfile.gettempdir()
+        else:  # 'system'
+            return tempfile.gettempdir()
+        
+    def _create_temp_file(self, total_queries: int, total_refs: int, output_file: str) -> Tuple[h5py.File, str]:
         """Create a temporary HDF5 file for storing intermediate results."""
-        temp_path = os.path.join(self.temp_dir, f'gambit_dist_{os.getpid()}.h5')
+        temp_dir = self._get_temp_dir(output_file)
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Generate unique temp file name
+        temp_name = f'gambit_dist_{os.getpid()}_{id(self)}.h5'
+        temp_path = os.path.join(temp_dir, temp_name)
         
         # Use memory-mapped files for small datasets
         if total_queries * total_refs < MEMORY_MAPPED_THRESHOLD:
             return h5py.File(temp_path, 'w', driver='core', backing_store=False), temp_path
+            
+        # For RAM-based storage, use memory-mapped files
+        if self.temp_location == 'ram':
+            return h5py.File(temp_path, 'w', driver='core', backing_store=True), temp_path
+            
         return h5py.File(temp_path, 'w'), temp_path
         
     def _process_batch(self,
@@ -155,7 +194,7 @@ class BatchedDistanceCalculator:
         self.batch_size, self.chunk_size = _optimize_batch_sizes(total_queries, total_refs)
         
         # Create temporary file for intermediate results
-        temp_file, temp_path = self._create_temp_file(total_queries, total_refs)
+        temp_file, temp_path = self._create_temp_file(total_queries, total_refs, output_file)
         
         try:
             # Process queries in batches
@@ -203,6 +242,7 @@ def jaccarddist_matrix_improved(queries: Sequence[KmerSignature],
                               output_file: str,
                               batch_size: int = DEFAULT_BATCH_SIZE,
                               chunk_size: int = DEFAULT_CHUNK_SIZE,
+                              temp_location: TempLocation = 'system',
                               progress = None) -> None:
     """
     Memory-efficient implementation of jaccarddist_matrix.
@@ -219,12 +259,18 @@ def jaccarddist_matrix_improved(queries: Sequence[KmerSignature],
         Number of query sequences to process in each batch
     chunk_size : int
         Number of reference sequences to process in each chunk
+    temp_location : {'output_dir', 'ram', 'system'}
+        Where to store temporary files:
+        - 'output_dir': Store in same directory as output file
+        - 'ram': Store in RAM-based filesystem (e.g. /dev/shm on Linux)
+        - 'system': Use system's default temp directory
     progress : optional
         Progress bar configuration
     """
     calculator = BatchedDistanceCalculator(
         batch_size=batch_size,
-        chunk_size=chunk_size
+        chunk_size=chunk_size,
+        temp_location=temp_location
     )
     calculator.calculate_distances(queries, refs, output_file, progress)
 
@@ -232,6 +278,7 @@ def jaccarddist_pairwise_improved(sigs: Sequence[KmerSignature],
                                 output_file: str,
                                 batch_size: int = DEFAULT_BATCH_SIZE,
                                 chunk_size: int = DEFAULT_CHUNK_SIZE,
+                                temp_location: TempLocation = 'system',
                                 progress = None) -> None:
     """
     Memory-efficient implementation of jaccarddist_pairwise.
@@ -246,11 +293,17 @@ def jaccarddist_pairwise_improved(sigs: Sequence[KmerSignature],
         Number of sequences to process in each batch
     chunk_size : int
         Number of sequences to process in each chunk
+    temp_location : {'output_dir', 'ram', 'system'}
+        Where to store temporary files:
+        - 'output_dir': Store in same directory as output file
+        - 'ram': Store in RAM-based filesystem (e.g. /dev/shm on Linux)
+        - 'system': Use system's default temp directory
     progress : optional
         Progress bar configuration
     """
     calculator = BatchedDistanceCalculator(
         batch_size=batch_size,
-        chunk_size=chunk_size
+        chunk_size=chunk_size,
+        temp_location=temp_location
     )
     calculator.calculate_distances(sigs, sigs, output_file, progress)
