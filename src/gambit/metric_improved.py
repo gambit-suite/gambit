@@ -126,33 +126,22 @@ class BatchedDistanceCalculator:
         all_coords = _cast_sigs_array(refs.values)
         bounds = refs.bounds.astype(BOUNDS_DTYPE, copy=False)
         
-        # Simple progress approach - suppress Cython output and show clean progress
+        # Simple progress approach - just like the working "Calculating distances" bar
         from gambit.util.progress import get_progress
         import os
         import sys
         from contextlib import redirect_stdout, redirect_stderr
         
-        # Create a simple progress bar - we'll just increment it periodically
-        with get_progress(True, total=100, desc="Computing MinHash candidates") as minhash_pbar:
-            
-            # Update progress to show we're starting
-            minhash_pbar.increment(10)
-            minhash_pbar.set_description("Computing MinHash candidates - starting...")
+        # Create a simple progress bar using the same pattern as distance calculation
+        with get_progress(True, total=total_refs, desc="Computing MinHash candidates") as minhash_pbar:
             
             # Suppress the scrolling output from Cython
             with open(os.devnull, 'w') as devnull:
                 with redirect_stdout(devnull), redirect_stderr(devnull):
                     
-                    # Update progress to show signature computation
-                    minhash_pbar.increment(20)
-                    minhash_pbar.set_description("Computing MinHash candidates - signatures...")
-                    
                     # Choose the best version based on dataset size
                     if total_refs > 10000:
                         # Use ultra-optimized version for very large datasets
-                        minhash_pbar.increment(20)
-                        minhash_pbar.set_description("Computing MinHash candidates - finding pairs...")
-                        
                         candidates_list = _cmetric.precompute_similarity_candidates_optimized(
                             all_coords, bounds, 
                             threshold=self.minhash_threshold, 
@@ -160,9 +149,6 @@ class BatchedDistanceCalculator:
                         )
                     else:
                         # Use standard parallel version for medium datasets
-                        minhash_pbar.increment(20)
-                        minhash_pbar.set_description("Computing MinHash candidates - finding pairs...")
-                        
                         candidates_list = _cmetric.precompute_similarity_candidates(
                             all_coords, bounds, 
                             threshold=self.minhash_threshold, 
@@ -170,10 +156,7 @@ class BatchedDistanceCalculator:
                         )
             
             # Complete the progress bar
-            remaining = 100 - minhash_pbar.current
-            if remaining > 0:
-                minhash_pbar.increment(remaining)
-            minhash_pbar.set_description("Computing MinHash candidates - completed!")
+            minhash_pbar.increment(total_refs)
         
         # Convert to set for fast lookup
         self.candidate_pairs = set(candidates_list)
@@ -458,11 +441,6 @@ class BatchedDistanceCalculator:
                     
                     # Always update progress for better responsiveness
                     pbar.increment(batch_size_actual)
-                    
-                    # Update description with current progress
-                    if processed_queries % max(1, total_queries // 20) == 0:  # Update description every 5%
-                        percentage = (processed_queries / total_queries) * 100
-                        pbar.set_description(f'Calculating distances ({percentage:.1f}%)')
             
             print("\nCombining results...")
             # Combine results into final output file
