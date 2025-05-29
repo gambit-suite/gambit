@@ -141,8 +141,20 @@ class BatchedDistanceCalculator:
                 self.buffer = ""
                 self.last_reported = 0
                 
+                # Check if progress bar has the needed attributes
+                self.has_progress_attrs = (
+                    hasattr(progress_bar, 'total') and 
+                    hasattr(progress_bar, 'current') and 
+                    hasattr(progress_bar, 'increment') and
+                    hasattr(progress_bar, 'set_description')
+                )
+                
             def write(self, text):
                 self.buffer += text
+                
+                # Only process if we have a real progress bar
+                if not self.has_progress_attrs:
+                    return
                 
                 # Look for progress patterns from Cython code
                 # Pattern: "Progress: 1000/48,223 sequences (2.1%)"
@@ -156,7 +168,10 @@ class BatchedDistanceCalculator:
                     # Update progress bar
                     increment = current - self.last_reported
                     if increment > 0:
-                        self.progress_bar.increment(min(increment, self.progress_bar.total - self.progress_bar.current))
+                        remaining_capacity = self.progress_bar.total - self.progress_bar.current
+                        actual_increment = min(increment, remaining_capacity)
+                        if actual_increment > 0:
+                            self.progress_bar.increment(actual_increment)
                         self.last_reported = current
                         
                         # Update description with current phase
@@ -190,7 +205,8 @@ class BatchedDistanceCalculator:
         # For MinHash, the work is roughly: signature computation + pairwise comparison
         estimated_work = total_refs  # Use total_refs as a reasonable estimate
         
-        with get_progress(None, total=estimated_work, desc="Computing MinHash") as minhash_pbar:
+        # Always create a proper progress bar for MinHash (not None)
+        with get_progress(True, total=estimated_work, desc="Computing MinHash") as minhash_pbar:
             # Capture and redirect stdout to our progress monitor
             original_stdout = sys.stdout
             progress_capture = ProgressCapture(minhash_pbar, total_refs)
@@ -215,7 +231,10 @@ class BatchedDistanceCalculator:
                     )
                 
                 # Ensure progress bar is completed
-                if minhash_pbar.current < minhash_pbar.total:
+                if (progress_capture.has_progress_attrs and 
+                    hasattr(minhash_pbar, 'current') and 
+                    hasattr(minhash_pbar, 'total') and
+                    minhash_pbar.current < minhash_pbar.total):
                     minhash_pbar.increment(minhash_pbar.total - minhash_pbar.current)
                     
             finally:
