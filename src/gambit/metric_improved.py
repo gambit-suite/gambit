@@ -126,119 +126,54 @@ class BatchedDistanceCalculator:
         all_coords = _cast_sigs_array(refs.values)
         bounds = refs.bounds.astype(BOUNDS_DTYPE, copy=False)
         
-        # Create progress bar for MinHash computation
+        # Simple progress approach - suppress Cython output and show clean progress
         from gambit.util.progress import get_progress
+        import os
         import sys
-        import io
-        import re
-        import threading
-        import time
+        from contextlib import redirect_stdout, redirect_stderr
         
-        class ProgressCapture:
-            def __init__(self, progress_bar, total_sequences):
-                self.progress_bar = progress_bar
-                self.total_sequences = total_sequences
-                self.buffer = ""
-                self.last_reported = 0
-                
-                # Check if progress bar has the needed attributes
-                self.has_progress_attrs = (
-                    hasattr(progress_bar, 'total') and 
-                    hasattr(progress_bar, 'current') and 
-                    hasattr(progress_bar, 'increment') and
-                    hasattr(progress_bar, 'set_description')
-                )
-                
-            def write(self, text):
-                self.buffer += text
-                
-                # Only process if we have a real progress bar
-                if not self.has_progress_attrs:
-                    return
-                
-                # Look for progress patterns from Cython code
-                # Pattern: "Progress: 1000/48,223 sequences (2.1%)"
-                progress_pattern = r'Progress: (\d+)/(\d+) sequences \(([\d.]+)%\)'
-                matches = re.findall(progress_pattern, self.buffer)
-                
-                if matches:
-                    current, total, percent = matches[-1]
-                    current = int(current)
-                    
-                    # Update progress bar
-                    increment = current - self.last_reported
-                    if increment > 0:
-                        remaining_capacity = self.progress_bar.total - self.progress_bar.current
-                        actual_increment = min(increment, remaining_capacity)
-                        if actual_increment > 0:
-                            self.progress_bar.increment(actual_increment)
-                        self.last_reported = current
-                        
-                        # Update description with current phase
-                        if "Finding candidate pairs" in self.buffer or "similar pairs" in self.buffer:
-                            self.progress_bar.set_description(f"Finding candidate pairs ({percent}%)")
-                        elif "signatures" in self.buffer:
-                            self.progress_bar.set_description(f"Computing signatures ({percent}%)")
-                
-                # Look for completion messages
-                if "Found" in text and "candidate pairs" in text:
-                    # Extract the number found
-                    found_pattern = r'Found (\d+(?:,\d+)*) candidate pairs'
-                    found_matches = re.findall(found_pattern, text)
-                    if found_matches:
-                        # Complete the progress bar
-                        remaining = self.progress_bar.total - self.progress_bar.current
-                        if remaining > 0:
-                            self.progress_bar.increment(remaining)
-                        
-                        # Show final message
-                        count = found_matches[0].replace(',', '')
-                        self.progress_bar.set_description(f"Completed - found {found_matches[0]} candidates")
-                
-            def flush(self):
-                pass
-                
-            def isatty(self):
-                return False
-        
-        # Use progress bar with estimated total work
-        # For MinHash, the work is roughly: signature computation + pairwise comparison
-        estimated_work = total_refs  # Use total_refs as a reasonable estimate
-        
-        # Always create a proper progress bar for MinHash (not None)
-        with get_progress(True, total=estimated_work, desc="Computing MinHash") as minhash_pbar:
-            # Capture and redirect stdout to our progress monitor
-            original_stdout = sys.stdout
-            progress_capture = ProgressCapture(minhash_pbar, total_refs)
+        # Create a simple progress bar - we'll just increment it periodically
+        with get_progress(True, total=100, desc="Computing MinHash candidates") as minhash_pbar:
             
-            try:
-                sys.stdout = progress_capture
-                
-                # Choose the best version based on dataset size
-                if total_refs > 10000:
-                    # Use ultra-optimized version for very large datasets
-                    candidates_list = _cmetric.precompute_similarity_candidates_optimized(
-                        all_coords, bounds, 
-                        threshold=self.minhash_threshold, 
-                        num_hashes=self.minhash_hashes
-                    )
-                else:
-                    # Use standard parallel version for medium datasets
-                    candidates_list = _cmetric.precompute_similarity_candidates(
-                        all_coords, bounds, 
-                        threshold=self.minhash_threshold, 
-                        num_hashes=self.minhash_hashes
-                    )
-                
-                # Ensure progress bar is completed
-                if (progress_capture.has_progress_attrs and 
-                    hasattr(minhash_pbar, 'current') and 
-                    hasattr(minhash_pbar, 'total') and
-                    minhash_pbar.current < minhash_pbar.total):
-                    minhash_pbar.increment(minhash_pbar.total - minhash_pbar.current)
+            # Update progress to show we're starting
+            minhash_pbar.increment(10)
+            minhash_pbar.set_description("Computing MinHash candidates - starting...")
+            
+            # Suppress the scrolling output from Cython
+            with open(os.devnull, 'w') as devnull:
+                with redirect_stdout(devnull), redirect_stderr(devnull):
                     
-            finally:
-                sys.stdout = original_stdout
+                    # Update progress to show signature computation
+                    minhash_pbar.increment(20)
+                    minhash_pbar.set_description("Computing MinHash candidates - signatures...")
+                    
+                    # Choose the best version based on dataset size
+                    if total_refs > 10000:
+                        # Use ultra-optimized version for very large datasets
+                        minhash_pbar.increment(20)
+                        minhash_pbar.set_description("Computing MinHash candidates - finding pairs...")
+                        
+                        candidates_list = _cmetric.precompute_similarity_candidates_optimized(
+                            all_coords, bounds, 
+                            threshold=self.minhash_threshold, 
+                            num_hashes=self.minhash_hashes
+                        )
+                    else:
+                        # Use standard parallel version for medium datasets
+                        minhash_pbar.increment(20)
+                        minhash_pbar.set_description("Computing MinHash candidates - finding pairs...")
+                        
+                        candidates_list = _cmetric.precompute_similarity_candidates(
+                            all_coords, bounds, 
+                            threshold=self.minhash_threshold, 
+                            num_hashes=self.minhash_hashes
+                        )
+            
+            # Complete the progress bar
+            remaining = 100 - minhash_pbar.current
+            if remaining > 0:
+                minhash_pbar.increment(remaining)
+            minhash_pbar.set_description("Computing MinHash candidates - completed!")
         
         # Convert to set for fast lookup
         self.candidate_pairs = set(candidates_list)
