@@ -188,22 +188,23 @@ class BatchedDistanceCalculator:
         temp_name = f'gambit_dist_{os.getpid()}_{id(self)}.h5'
         temp_path = os.path.join(temp_dir, temp_name)
         
-        # Use memory-mapped files for small/medium datasets
+        # For small datasets, use pure in-memory files (no file I/O at all)
         if total_queries * total_refs < MEMORY_MAPPED_THRESHOLD:
             return h5py.File(temp_path, 'w', driver='core', backing_store=False), temp_path
         
-        # For RAM-based storage, use memory-mapped files with compression
+        # For RAM-based storage, optimize for fast cleanup
         if self.temp_location == 'ram':
             return h5py.File(temp_path, 'w', driver='core', backing_store=True, 
-                            libver='latest',  # Use latest HDF5 version
-                            rdcc_nslots=100000,  # Increase cache slots
-                            rdcc_nbytes=1024*1024*1024), temp_path  # 1GB cache
+                            libver='latest',
+                            rdcc_nslots=10000,      # Reduced cache slots
+                            rdcc_nbytes=128*1024*1024,  # Reduced to 128MB cache
+                            rdcc_w0=0.5), temp_path  # Faster cache eviction
         
-        # For system storage, use compression and caching
+        # For system storage, use moderate caching
         return h5py.File(temp_path, 'w', 
                         libver='latest',
-                        rdcc_nslots=100000,
-                        rdcc_nbytes=1024*1024*1024), temp_path
+                        rdcc_nslots=50000,
+                        rdcc_nbytes=256*1024*1024), temp_path
         
     def _process_batch(self,
                       queries: Sequence[KmerSignature],
@@ -447,11 +448,26 @@ class BatchedDistanceCalculator:
             self._combine_results(temp_file, output_file, total_queries, total_refs, is_square)
             
         finally:
-            # Clean up temporary file
+            # Clean up temporary file efficiently
             print("\nCleaning up temporary files...")
-            temp_file.close()
+            
+            # Force flush and close efficiently
+            try:
+                if hasattr(temp_file, 'flush'):
+                    temp_file.flush()
+                temp_file.close()
+            except Exception as e:
+                print(f"  Warning: Error closing temp file: {e}")
+            
+            # For RAM disk, deletion should be fast
             if os.path.exists(temp_path):
-                os.remove(temp_path)
+                try:
+                    os.remove(temp_path)
+                    print(f"  ✅ Removed temporary file: {temp_path}")
+                except Exception as e:
+                    print(f"  Warning: Error removing temp file: {e}")
+            
+            print("  ✅ Cleanup completed")
 
     def _combine_results(self,
                         temp_file: h5py.File,
