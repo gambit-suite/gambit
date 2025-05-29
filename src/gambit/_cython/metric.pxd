@@ -16,6 +16,9 @@ cdef float c_estimate_jaccard_from_minhash(unsigned int* sig1, unsigned int* sig
 
 cdef void c_init_hash_functions(unsigned long* hash_functions, int num_hashes) noexcept nogil
 
-# Public MinHash pre-filtering function
+# Public MinHash pre-filtering functions - both parallel and optimized versions
 cpdef precompute_similarity_candidates(COORDS_T_2[:] all_coords, BOUNDS_T[:] bounds, 
                                       float threshold=*, int num_hashes=*)
+
+cpdef precompute_similarity_candidates_optimized(COORDS_T_2[:] all_coords, BOUNDS_T[:] bounds, 
+                                                float threshold=*, int num_hashes=*)

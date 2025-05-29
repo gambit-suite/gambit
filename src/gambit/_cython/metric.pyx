@@ -140,7 +140,7 @@ cdef void c_init_hash_functions(unsigned long* hash_functions, int num_hashes) n
     cdef unsigned long prime = 2147483647UL  # Large prime
     
     # Set seed based on current state
-    c_random_seed = 42  # Fixed seed for reproducibility
+    c_random_seed = 2025  # Fixed seed for reproducibility
     
     for i in range(2 * num_hashes):
         hash_functions[i] = (c_fast_random() % (prime - 1)) + 1  # Avoid 0
@@ -320,6 +320,73 @@ cpdef precompute_similarity_candidates(COORDS_T_2[:] all_coords, BOUNDS_T[:] bou
         free(hash_functions)
         free(all_signatures)
         free(temp_sig)
+
+cpdef precompute_similarity_candidates_optimized(COORDS_T_2[:] all_coords, BOUNDS_T[:] bounds, 
+                                               float threshold=0.8, int num_hashes=128):
+   """Optimized parallel MinHash for very large datasets (>100k sequences)."""
+   cdef:
+       int N = bounds.shape[0] - 1
+       int i, j
+       BOUNDS_T begin_i, end_i
+       
+       # Allocate memory
+       unsigned long* hash_functions = <unsigned long*>malloc(2 * num_hashes * sizeof(unsigned long))
+       unsigned int* all_signatures = <unsigned int*>malloc(N * num_hashes * sizeof(unsigned int))
+       
+       float estimated_sim
+       list candidates = []
+       int processed = 0
+       int total_comparisons = (N * (N - 1)) // 2
+   
+   try:
+       print(f"Computing MinHash signatures for {N:,} sequences in parallel (optimized)...")
+       
+       # Initialize hash functions once
+       c_init_hash_functions(hash_functions, num_hashes)
+       
+       # PARALLEL signature computation with optimized scheduling
+       for i in prange(N, nogil=True, schedule='guided', chunksize=max(1, N//1000)):
+           begin_i = bounds[i]
+           end_i = bounds[i + 1]
+           
+           # Compute signature directly into the array
+           c_compute_minhash(all_coords[begin_i:end_i], hash_functions, 
+                            &all_signatures[i * num_hashes], num_hashes)
+       
+       print(f"All signatures computed! Finding candidate pairs...")
+       
+       # Optimized comparison with chunked processing
+       chunk_size = max(100, N // 1000)
+       
+       for i in range(N - 1):
+           chunk_candidates = []
+           
+           for j in range(i + 1, N):
+               estimated_sim = c_estimate_jaccard_from_minhash(
+                   &all_signatures[i * num_hashes],
+                   &all_signatures[j * num_hashes], 
+                   num_hashes
+               )
+               
+               if estimated_sim >= threshold:
+                   chunk_candidates.append((i, j))
+               
+               processed += 1
+           
+           # Add chunk results to main list
+           candidates.extend(chunk_candidates)
+           
+           # Progress update
+           if (i + 1) % chunk_size == 0:
+               progress_pct = (100.0 * (i + 1)) / (N - 1)
+               print(f"    Progress: {i+1:,}/{N-1:,} sequences ({progress_pct:.1f}%)")
+       
+       print(f"Found {len(candidates):,} candidate pairs above {threshold:.2f} similarity")
+       return candidates
+       
+   finally:
+       free(hash_functions)
+       free(all_signatures)
 
 # ALTERNATIVE: Pure MinHash approximation (1000x speedup)
 cpdef void _jaccarddist_parallel_approximate(COORDS_T[:] query, COORDS_T_2[:] ref_coords, 

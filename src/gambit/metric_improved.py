@@ -126,13 +126,24 @@ class BatchedDistanceCalculator:
         all_coords = _cast_sigs_array(refs.values)
         bounds = refs.bounds.astype(BOUNDS_DTYPE, copy=False)
         
-        # Call the Cython MinHash function
-        print("  Computing MinHash signatures and finding candidates...")
-        candidates_list = _cmetric.precompute_similarity_candidates(
-            all_coords, bounds, 
-            threshold=self.minhash_threshold, 
-            num_hashes=self.minhash_hashes
-        )
+        # Call the optimized parallel Cython MinHash function
+        print("  Using parallel MinHash computation for maximum speed...")
+        
+        # Choose the best version based on dataset size
+        if total_refs > 10000:
+            # Use ultra-optimized version for very large datasets
+            candidates_list = _cmetric.precompute_similarity_candidates_optimized(
+                all_coords, bounds, 
+                threshold=self.minhash_threshold, 
+                num_hashes=self.minhash_hashes
+            )
+        else:
+            # Use standard parallel version for medium datasets
+            candidates_list = _cmetric.precompute_similarity_candidates(
+                all_coords, bounds, 
+                threshold=self.minhash_threshold, 
+                num_hashes=self.minhash_hashes
+            )
         
         # Convert to set for fast lookup
         self.candidate_pairs = set(candidates_list)
