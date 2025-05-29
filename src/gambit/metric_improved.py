@@ -386,9 +386,29 @@ class BatchedDistanceCalculator:
         
         try:
             print("\nStarting distance calculations...")
-            # Process queries in batches with less frequent progress updates
-            update_interval = max(1, total_queries // 100)  # Update progress every 1%
+            
+            # Show actual number of comparisons that will be computed
+            if self.use_minhash and self.candidate_pairs is not None:
+                actual_comparisons = len(self.candidate_pairs)
+                if is_square:
+                    # For square matrices, also add diagonal elements (self-comparisons)
+                    actual_comparisons += total_queries
+                    print(f"🎯 Actual comparisons (after MinHash filtering): {actual_comparisons:,}")
+                    print(f"   - Candidate pairs: {len(self.candidate_pairs):,}")
+                    print(f"   - Diagonal elements: {total_queries:,}")
+                else:
+                    print(f"🎯 Actual comparisons (after MinHash filtering): {actual_comparisons:,}")
+                
+                speedup_factor = total_comparisons / max(1, actual_comparisons)
+                print(f"⚡ Computational speedup: {speedup_factor:.1f}x fewer distance calculations")
+                print(f"📊 Computing only {(actual_comparisons/total_comparisons)*100:.1f}% of theoretical comparisons")
+            else:
+                print(f"🎯 Computing all {total_comparisons:,} distance comparisons (no filtering)")
+            
+            # Process queries in batches with continuous progress updates
             with get_progress(progress, total=total_queries, desc='Calculating distances') as pbar:
+                processed_queries = 0
+                
                 for i in range(0, total_queries, self.batch_size):
                     batch_end = min(i + self.batch_size, total_queries)
                     batch_queries = queries[i:batch_end]
@@ -402,9 +422,17 @@ class BatchedDistanceCalculator:
                     else:
                         self._process_batch(batch_queries, refs, i, temp_file, is_square)
                     
-                    # Update progress less frequently for large datasets
-                    if i % update_interval == 0:
-                        pbar.increment(len(batch_queries))
+                    # Update progress after each batch completion
+                    batch_size_actual = len(batch_queries)
+                    processed_queries += batch_size_actual
+                    
+                    # Always update progress for better responsiveness
+                    pbar.increment(batch_size_actual)
+                    
+                    # Update description with current progress
+                    if processed_queries % max(1, total_queries // 20) == 0:  # Update description every 5%
+                        percentage = (processed_queries / total_queries) * 100
+                        pbar.set_description(f'Calculating distances ({percentage:.1f}%)')
             
             print("\nCombining results...")
             # Combine results into final output file
@@ -434,9 +462,13 @@ class BatchedDistanceCalculator:
                 compression='gzip' if total_refs > MEMORY_MAPPED_THRESHOLD else None
             )
             
+            print(f"Writing final results to {output_file}...")
+            
             if is_square:
                 # For square matrices, process in chunks to reduce memory usage
                 merge_chunk_size = min(100, self.batch_size)  # Use smaller chunks for merging
+                total_batches = (total_queries + self.batch_size - 1) // self.batch_size
+                processed_batches = 0
                 
                 for i in range(0, total_queries, self.batch_size):
                     batch_end = min(i + self.batch_size, total_queries)
@@ -456,9 +488,16 @@ class BatchedDistanceCalculator:
                             # Mirror only the portion we've calculated
                             for k in range(j + 1, total_refs - i):
                                 out_file['distances'][i + k, row_idx] = out_file['distances'][row_idx, i + k]
+                    
+                    processed_batches += 1
+                    if processed_batches % max(1, total_batches // 10) == 0:  # Progress every 10%
+                        percentage = (processed_batches / total_batches) * 100
+                        print(f"  Writing progress: {percentage:.1f}% ({processed_batches}/{total_batches} batches)")
             else:
                 # For non-square matrices, process in chunks
                 merge_chunk_size = min(100, self.batch_size)
+                total_batches = (total_queries + self.batch_size - 1) // self.batch_size
+                processed_batches = 0
                 
                 for i in range(0, total_queries, self.batch_size):
                     batch_end = min(i + self.batch_size, total_queries)
@@ -469,6 +508,13 @@ class BatchedDistanceCalculator:
                         chunk_end = min(chunk_start + merge_chunk_size, batch_end - i)
                         chunk_data = batch_data[chunk_start:chunk_end]
                         out_file['distances'][i + chunk_start:i + chunk_end] = chunk_data
+                    
+                    processed_batches += 1
+                    if processed_batches % max(1, total_batches // 10) == 0:  # Progress every 10%
+                        percentage = (processed_batches / total_batches) * 100
+                        print(f"  Writing progress: {percentage:.1f}% ({processed_batches}/{total_batches} batches)")
+            
+            print("  ✅ Results written successfully!")
 
 def jaccarddist_matrix_improved(queries: Sequence[KmerSignature],
                               refs: Sequence[KmerSignature],
