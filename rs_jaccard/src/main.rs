@@ -523,7 +523,7 @@ fn save_matrix_csv_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf)
     let mut writer = csv::Writer::from_writer(file);
     
     // Write header row (column names)
-    let mut header = vec!["ID".to_string()];
+    let mut header = vec!["".to_string()];
     header.extend(ids.iter().cloned());
     writer.write_record(&header)?;
     

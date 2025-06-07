@@ -141,7 +141,7 @@ pub fn jaccard_distance_matrix_rowwise_stream(
     let start_time = std::time::Instant::now();
 
     // Write header
-    let mut header = vec!["ID".to_string()];
+    let mut header = vec!["".to_string()];
     header.extend(ids.iter().cloned());
     writer.write_record(&header)?;
 
