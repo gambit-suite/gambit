@@ -272,17 +272,27 @@ fn main() -> Result<()> {
             let matrix_size = subset_bounds.len() - 1;
             println!("Computing {}x{} distance matrix using {} method...", matrix_size, matrix_size, method);
             
-            let matrix = match method.as_str() {
-                "upper" => jaccard_distance_matrix_upper_triangle(&subset_coords, &subset_bounds),
-                "rowwise" => jaccard_distance_matrix_rowwise(&subset_coords, &subset_bounds),
-                "blocked" => jaccard_distance_matrix_blocked(&subset_coords, &subset_bounds, 256),
-                _ => anyhow::bail!("Unknown method: '{}'. Use 'upper', 'rowwise', or 'blocked'", method),
+            match method.as_str() {
+                "upper" | "rowwise" | "blocked" => {
+                    let matrix = match method.as_str() {
+                        "upper" => jaccard_distance_matrix_upper_triangle(&subset_coords, &subset_bounds),
+                        "rowwise" => jaccard_distance_matrix_rowwise(&subset_coords, &subset_bounds),
+                        "blocked" => jaccard_distance_matrix_blocked(&subset_coords, &subset_bounds, 256),
+                        _ => unreachable!(),
+                    };
+                    
+                    println!("Writing matrix with sample IDs...");
+                    save_matrix_csv_with_ids(&matrix, &subset_ids, output)?;
+                    println!("Matrix saved to {}", output.display());
+                }
+                "rowwise-stream" => {
+                    let file = File::create(output).context("Failed to create output file")?;
+                    let mut writer = csv::Writer::from_writer(BufWriter::new(file));
+                    jaccard_distance_matrix_rowwise_stream(&subset_coords, &subset_bounds, &mut writer, &subset_ids)?;
+                    println!("Matrix saved to {}", output.display());
+                }
+                _ => anyhow::bail!("Unknown method: '{}'. Use 'upper', 'rowwise', 'blocked', or 'rowwise-stream'", method),
             };
-            
-            println!("Writing matrix with sample IDs...");
-            save_matrix_csv_with_ids(&matrix, &subset_ids, output)?;
-            
-            println!("Matrix saved to {}", output.display());
         },
         
         Commands::InfoSig { signatures } => {

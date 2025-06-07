@@ -2,6 +2,8 @@ use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::{stdout, Write};
+use anyhow::Result;
+use csv;
 
 pub type CoordType = u32;
 pub type BoundType = usize;
@@ -121,6 +123,84 @@ pub fn jaccard_distance_matrix_rowwise(
     println!(); // Move to the next line after the loop
     println!("Matrix computation completed in {:?}", start_time.elapsed());
     result
+}
+
+/// Row-wise parallel processing with streaming output
+pub fn jaccard_distance_matrix_rowwise_stream(
+    all_coords: &[CoordType],
+    bounds: &[BoundType],
+    writer: &mut csv::Writer<impl Write>,
+    ids: &[String],
+) -> Result<()> {
+    let n = bounds.len() - 1;
+
+    println!(
+        "Computing and streaming {}x{} distance matrix (rowwise method)...",
+        n, n
+    );
+    let start_time = std::time::Instant::now();
+
+    // Write header
+    let mut header = vec!["ID".to_string()];
+    header.extend(ids.iter().cloned());
+    writer.write_record(&header)?;
+
+    // Process rows in chunks to show progress
+    let chunk_size = 50;
+
+    for chunk_start in (0..n).step_by(chunk_size) {
+        let chunk_end = std::cmp::min(chunk_start + chunk_size, n);
+
+        let mut chunk_results: Vec<(usize, Vec<ScoreType>)> = (chunk_start..chunk_end)
+            .into_par_iter()
+            .map(|i| {
+                let begin_i = bounds[i];
+                let end_i = bounds[i + 1];
+                let coords_i = &all_coords[begin_i..end_i];
+
+                let mut row = vec![0.0; n];
+
+                for j in 0..n {
+                    if i != j {
+                        let begin_j = bounds[j];
+                        let end_j = bounds[j + 1];
+                        let coords_j = &all_coords[begin_j..end_j];
+                        row[j] = jaccard_distance_core(coords_i, coords_j);
+                    }
+                }
+
+                (i, row)
+            })
+            .collect();
+
+        // Sort results by row index to ensure correct order in CSV
+        chunk_results.sort_unstable_by_key(|k| k.0);
+
+        for (i, row) in chunk_results {
+            let mut csv_row = vec![ids[i].clone()];
+            csv_row.extend(row.iter().map(|&x| format!("{:.6}", x)));
+            writer.write_record(&csv_row)?;
+        }
+
+        let elapsed = start_time.elapsed();
+        let progress = (chunk_end as f64 / n as f64) * 100.0;
+        let eta_seconds = if chunk_end > 0 {
+            (elapsed.as_secs_f64() / chunk_end as f64) * (n - chunk_end) as f64
+        } else {
+            0.0
+        };
+
+        print!(
+            "\rProgress: {}/{} ({:.1}%) - Elapsed: {:?} - ETA: {:.0}s ",
+            chunk_end, n, progress, elapsed, eta_seconds
+        );
+        stdout().flush().unwrap();
+    }
+
+    writer.flush()?;
+    println!(); // Move to the next line after the loop
+    println!("Matrix streaming completed in {:?}", start_time.elapsed());
+    Ok(())
 }
 
 /// Upper triangle computation with simple progress
