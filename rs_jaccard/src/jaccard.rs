@@ -267,51 +267,70 @@ pub fn jaccard_distance_matrix_blocked(
 ) -> Vec<Vec<ScoreType>> {
     let n = bounds.len() - 1;
     let mut distance_matrix = vec![vec![0.0; n]; n];
-    
+
     let num_blocks = (n + block_size - 1) / block_size;
-    
+    println!(
+        "Computing on {}x{} matrix using {} block rows...",
+        n, n, num_blocks
+    );
+    let start_time = std::time::Instant::now();
+
     for bi in 0..num_blocks {
         let block_i_start = bi * block_size;
         let block_i_end = std::cmp::min(block_i_start + block_size, n);
-        
+
         for bj in bi..num_blocks {
             let block_j_start = bj * block_size;
             let block_j_end = std::cmp::min(block_j_start + block_size, n);
-            
+
             let pairs: Vec<(usize, usize)> = (block_i_start..block_i_end)
                 .flat_map(|i| {
                     let start_j = std::cmp::max(block_j_start, i + 1);
                     (start_j..block_j_end).map(move |j| (i, j))
                 })
                 .collect();
-            
+
             let results: Vec<(usize, usize, ScoreType)> = pairs
                 .into_par_iter()
                 .map(|(i, j)| {
                     let begin_i = bounds[i];
                     let end_i = bounds[i + 1];
                     let coords_i = &all_coords[begin_i..end_i];
-                    
+
                     let begin_j = bounds[j];
                     let end_j = bounds[j + 1];
                     let coords_j = &all_coords[begin_j..end_j];
-                    
+
                     let distance = jaccard_distance_core(coords_i, coords_j);
                     (i, j, distance)
                 })
                 .collect();
-            
+
             for (i, j, distance) in results {
                 distance_matrix[i][j] = distance;
                 distance_matrix[j][i] = distance;
             }
         }
-        
-        if bi % 10 == 0 {
-            println!("Processed block {}/{}", bi + 1, num_blocks);
-        }
+
+        let blocks_processed = bi + 1;
+        let elapsed = start_time.elapsed();
+        let progress = (blocks_processed as f64 / num_blocks as f64) * 100.0;
+        let eta_seconds = if blocks_processed > 0 {
+            (elapsed.as_secs_f64() / blocks_processed as f64)
+                * (num_blocks - blocks_processed) as f64
+        } else {
+            0.0
+        };
+
+        print!(
+            "\rProgress: block row {}/{} ({:.1}%) - Elapsed: {:?} - ETA: {:.0}s ",
+            blocks_processed, num_blocks, progress, elapsed, eta_seconds
+        );
+        stdout().flush().unwrap();
     }
-    
+
+    println!();
+    println!("Matrix computation completed in {:?}", start_time.elapsed());
     distance_matrix
 }
 
