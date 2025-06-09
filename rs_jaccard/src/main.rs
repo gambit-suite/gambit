@@ -53,8 +53,6 @@ enum Commands {
         #[arg(long)]
         query_sig: PathBuf,
         #[arg(long)]
-        query_idx: usize,
-        #[arg(long)]
         ref_sig: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
@@ -194,7 +192,7 @@ fn main() -> Result<()> {
             println!("Results saved to {}", output.display());
         },
         
-        Commands::QuerySig { query_sig, query_idx, ref_sig, output, threads } => {
+        Commands::QuerySig { query_sig, ref_sig, output, threads } => {
             if let Some(t) = threads {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
@@ -204,15 +202,18 @@ fn main() -> Result<()> {
             println!("Query signature data loaded");
             let ref_sig_data = read_signatures(ref_sig)?;
             println!("Reference signature data loaded");
+            
+            println!("Preparing data for pairwise Jaccard calculation...");
             let (ref_coords, ref_bounds, ref_ids) = load_signatures_for_jaccard(&ref_sig_data)?;
+            let (query_coords, query_bounds, query_ids) = load_signatures_for_jaccard(&query_sig_data)?;
             
-            println!("Loading data for Jaccard calculation...");
-            let query_coords = load_query_signature(&query_sig_data, *query_idx)?;
+            println!("Calculating pairwise Jaccard distances...");
+            println!("Query signatures: {}, Reference signatures: {}", query_ids.len(), ref_ids.len());
             
-            println!("Calculating Jaccard distances...");
-            let distances = jaccard_distances_parallel(&query_coords, &ref_coords, &ref_bounds);
+            let matrix = jaccard_distance_matrix_query_vs_ref(&query_coords, &query_bounds, &ref_coords, &ref_bounds)?;
             
-            save_distances(&distances, &output)?;
+            println!("Writing matrix with query and reference IDs...");
+            save_query_ref_matrix_csv(&matrix, &query_ids, &ref_ids, output)?;
             println!("Results saved to {}", output.display());
         },
         
@@ -591,5 +592,25 @@ fn save_matrix_binary_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathB
         }
     }
     
+    Ok(())
+}
+
+fn save_query_ref_matrix_csv(matrix: &[Vec<f32>], query_ids: &[String], ref_ids: &[String], path: &PathBuf) -> Result<()> {
+    let file = File::create(path)?;
+    let mut writer = csv::Writer::from_writer(file);
+    
+    // Write header row (column names: empty first column, then reference IDs)
+    let mut header = vec!["".to_string()];
+    header.extend(ref_ids.iter().cloned());
+    writer.write_record(&header)?;
+    
+    // Write matrix rows with query IDs as row labels
+    for (i, row) in matrix.iter().enumerate() {
+        let mut csv_row = vec![query_ids[i].clone()];
+        csv_row.extend(row.iter().map(|&x| format!("{:.6}", x)));
+        writer.write_record(&csv_row)?;
+    }
+    
+    writer.flush()?;
     Ok(())
 }

@@ -351,6 +351,70 @@ pub fn jaccard_distance_matrix_all_vs_all(coords_vec: &[Vec<CoordType>]) -> Vec<
     matrix
 }
 
+/// Calculate query vs reference distance matrix (rows = queries, cols = references)
+pub fn jaccard_distance_matrix_query_vs_ref(
+    query_coords: &[CoordType],
+    query_bounds: &[BoundType],
+    ref_coords: &[CoordType], 
+    ref_bounds: &[BoundType],
+) -> Result<Vec<Vec<ScoreType>>> {
+    let n_queries = query_bounds.len() - 1;
+    let n_refs = ref_bounds.len() - 1;
+    
+    println!("Computing {}x{} query vs reference distance matrix...", n_queries, n_refs);
+    let start_time = std::time::Instant::now();
+    
+    // Process queries in chunks to show progress
+    let chunk_size = 50;
+    let mut result = vec![vec![0.0; n_refs]; n_queries];
+    
+    for chunk_start in (0..n_queries).step_by(chunk_size) {
+        let chunk_end = std::cmp::min(chunk_start + chunk_size, n_queries);
+        
+        let chunk_results: Vec<(usize, Vec<ScoreType>)> = (chunk_start..chunk_end)
+            .into_par_iter()
+            .map(|i| {
+                let begin_i = query_bounds[i];
+                let end_i = query_bounds[i + 1];
+                let query_coords_i = &query_coords[begin_i..end_i];
+                
+                let mut row = vec![0.0; n_refs];
+                
+                for j in 0..n_refs {
+                    let begin_j = ref_bounds[j];
+                    let end_j = ref_bounds[j + 1];
+                    let ref_coords_j = &ref_coords[begin_j..end_j];
+                    row[j] = jaccard_distance_core(query_coords_i, ref_coords_j);
+                }
+                
+                (i, row)
+            })
+            .collect();
+        
+        for (i, row) in chunk_results {
+            result[i] = row;
+        }
+        
+        let elapsed = start_time.elapsed();
+        let progress = (chunk_end as f64 / n_queries as f64) * 100.0;
+        let eta_seconds = if chunk_end > 0 {
+            (elapsed.as_secs_f64() / chunk_end as f64) * (n_queries - chunk_end) as f64
+        } else {
+            0.0
+        };
+        
+        print!(
+            "\rProgress: {}/{} ({:.1}%) - Elapsed: {:?} - ETA: {:.0}s ",
+            chunk_end, n_queries, progress, elapsed, eta_seconds
+        );
+        stdout().flush().unwrap();
+    }
+    
+    println!(); // Move to the next line after the loop
+    println!("Query vs reference matrix computation completed in {:?}", start_time.elapsed());
+    Ok(result)
+}
+
 /// MinHash implementation
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
