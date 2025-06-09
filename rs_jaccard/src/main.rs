@@ -56,6 +56,8 @@ enum Commands {
         ref_sig: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        #[arg(long, default_value = "rowwise")]
+        method: String,
         #[arg(short, long)]
         threads: Option<usize>,
     },
@@ -192,7 +194,7 @@ fn main() -> Result<()> {
             println!("Results saved to {}", output.display());
         },
         
-        Commands::QuerySig { query_sig, ref_sig, output, threads } => {
+        Commands::QuerySig { query_sig, ref_sig, output, method, threads } => {
             if let Some(t) = threads {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
@@ -210,11 +212,26 @@ fn main() -> Result<()> {
             println!("Calculating pairwise Jaccard distances...");
             println!("Query signatures: {}, Reference signatures: {}", query_ids.len(), ref_ids.len());
             
-            let matrix = jaccard_distance_matrix_query_vs_ref(&query_coords, &query_bounds, &ref_coords, &ref_bounds)?;
-            
-            println!("Writing matrix with query and reference IDs...");
-            save_query_ref_matrix_csv(&matrix, &query_ids, &ref_ids, output)?;
-            println!("Results saved to {}", output.display());
+            match method.as_str() {
+                "rowwise" | "blocked" => {
+                    let matrix = match method.as_str() {
+                        "rowwise" => jaccard_distance_matrix_query_vs_ref(&query_coords, &query_bounds, &ref_coords, &ref_bounds)?,
+                        "blocked" => jaccard_distance_matrix_query_vs_ref_blocked(&query_coords, &query_bounds, &ref_coords, &ref_bounds, 256)?,
+                        _ => unreachable!(),
+                    };
+                    
+                    println!("Writing matrix with query and reference IDs...");
+                    save_query_ref_matrix_csv(&matrix, &query_ids, &ref_ids, output)?;
+                    println!("Results saved to {}", output.display());
+                }
+                "rowwise-stream" => {
+                    let file = File::create(output).context("Failed to create output file")?;
+                    let mut writer = csv::Writer::from_writer(BufWriter::new(file));
+                    jaccard_distance_matrix_query_vs_ref_stream(&query_coords, &query_bounds, &ref_coords, &ref_bounds, &mut writer, &query_ids, &ref_ids)?;
+                    println!("Results saved to {}", output.display());
+                }
+                _ => anyhow::bail!("Unknown method: '{}'. Use 'rowwise', 'blocked', or 'rowwise-stream'", method),
+            }
         },
         
         Commands::Matrix { signatures, output, symmetric, threads } => {

@@ -415,6 +415,159 @@ pub fn jaccard_distance_matrix_query_vs_ref(
     Ok(result)
 }
 
+/// Calculate query vs reference distance matrix using blocked method for cache efficiency
+pub fn jaccard_distance_matrix_query_vs_ref_blocked(
+    query_coords: &[CoordType],
+    query_bounds: &[BoundType],
+    ref_coords: &[CoordType], 
+    ref_bounds: &[BoundType],
+    block_size: usize,
+) -> Result<Vec<Vec<ScoreType>>> {
+    let n_queries = query_bounds.len() - 1;
+    let n_refs = ref_bounds.len() - 1;
+    
+    println!("Computing {}x{} query vs reference distance matrix using blocked method (block size: {})...", n_queries, n_refs, block_size);
+    let start_time = std::time::Instant::now();
+    
+    let mut result = vec![vec![0.0; n_refs]; n_queries];
+    
+    let num_query_blocks = (n_queries + block_size - 1) / block_size;
+    let num_ref_blocks = (n_refs + block_size - 1) / block_size;
+    let total_blocks = num_query_blocks * num_ref_blocks;
+    let mut blocks_processed = 0;
+    
+    for qi in 0..num_query_blocks {
+        let query_block_start = qi * block_size;
+        let query_block_end = std::cmp::min(query_block_start + block_size, n_queries);
+        
+        for ri in 0..num_ref_blocks {
+            let ref_block_start = ri * block_size;
+            let ref_block_end = std::cmp::min(ref_block_start + block_size, n_refs);
+            
+            // Generate all pairs in this block
+            let pairs: Vec<(usize, usize)> = (query_block_start..query_block_end)
+                .flat_map(|i| (ref_block_start..ref_block_end).map(move |j| (i, j)))
+                .collect();
+            
+            let block_results: Vec<(usize, usize, ScoreType)> = pairs
+                .into_par_iter()
+                .map(|(i, j)| {
+                    let begin_i = query_bounds[i];
+                    let end_i = query_bounds[i + 1];
+                    let query_coords_i = &query_coords[begin_i..end_i];
+                    
+                    let begin_j = ref_bounds[j];
+                    let end_j = ref_bounds[j + 1];
+                    let ref_coords_j = &ref_coords[begin_j..end_j];
+                    
+                    let distance = jaccard_distance_core(query_coords_i, ref_coords_j);
+                    (i, j, distance)
+                })
+                .collect();
+            
+            for (i, j, distance) in block_results {
+                result[i][j] = distance;
+            }
+            
+            blocks_processed += 1;
+            let elapsed = start_time.elapsed();
+            let progress = (blocks_processed as f64 / total_blocks as f64) * 100.0;
+            let eta_seconds = if blocks_processed > 0 {
+                (elapsed.as_secs_f64() / blocks_processed as f64) * (total_blocks - blocks_processed) as f64
+            } else {
+                0.0
+            };
+            
+            print!(
+                "\rProgress: block {}/{} ({:.1}%) - Elapsed: {:?} - ETA: {:.0}s ",
+                blocks_processed, total_blocks, progress, elapsed, eta_seconds
+            );
+            stdout().flush().unwrap();
+        }
+    }
+    
+    println!(); // Move to the next line after the loop
+    println!("Blocked query vs reference matrix computation completed in {:?}", start_time.elapsed());
+    Ok(result)
+}
+
+/// Calculate query vs reference distance matrix with streaming output to avoid memory issues
+pub fn jaccard_distance_matrix_query_vs_ref_stream(
+    query_coords: &[CoordType],
+    query_bounds: &[BoundType],
+    ref_coords: &[CoordType], 
+    ref_bounds: &[BoundType],
+    writer: &mut csv::Writer<impl Write>,
+    query_ids: &[String],
+    ref_ids: &[String],
+) -> Result<()> {
+    let n_queries = query_bounds.len() - 1;
+    let n_refs = ref_bounds.len() - 1;
+    
+    println!("Computing and streaming {}x{} query vs reference distance matrix...", n_queries, n_refs);
+    let start_time = std::time::Instant::now();
+    
+    // Write header
+    let mut header = vec!["".to_string()];
+    header.extend(ref_ids.iter().cloned());
+    writer.write_record(&header)?;
+    
+    // Process queries in chunks to show progress
+    let chunk_size = 50;
+    
+    for chunk_start in (0..n_queries).step_by(chunk_size) {
+        let chunk_end = std::cmp::min(chunk_start + chunk_size, n_queries);
+        
+        let mut chunk_results: Vec<(usize, Vec<ScoreType>)> = (chunk_start..chunk_end)
+            .into_par_iter()
+            .map(|i| {
+                let begin_i = query_bounds[i];
+                let end_i = query_bounds[i + 1];
+                let query_coords_i = &query_coords[begin_i..end_i];
+                
+                let mut row = vec![0.0; n_refs];
+                
+                for j in 0..n_refs {
+                    let begin_j = ref_bounds[j];
+                    let end_j = ref_bounds[j + 1];
+                    let ref_coords_j = &ref_coords[begin_j..end_j];
+                    row[j] = jaccard_distance_core(query_coords_i, ref_coords_j);
+                }
+                
+                (i, row)
+            })
+            .collect();
+        
+        // Sort results by query index to ensure correct order in CSV
+        chunk_results.sort_unstable_by_key(|k| k.0);
+        
+        for (i, row) in chunk_results {
+            let mut csv_row = vec![query_ids[i].clone()];
+            csv_row.extend(row.iter().map(|&x| format!("{:.6}", x)));
+            writer.write_record(&csv_row)?;
+        }
+        
+        let elapsed = start_time.elapsed();
+        let progress = (chunk_end as f64 / n_queries as f64) * 100.0;
+        let eta_seconds = if chunk_end > 0 {
+            (elapsed.as_secs_f64() / chunk_end as f64) * (n_queries - chunk_end) as f64
+        } else {
+            0.0
+        };
+        
+        print!(
+            "\rProgress: {}/{} ({:.1}%) - Elapsed: {:?} - ETA: {:.0}s ",
+            chunk_end, n_queries, progress, elapsed, eta_seconds
+        );
+        stdout().flush().unwrap();
+    }
+    
+    writer.flush()?;
+    println!(); // Move to the next line after the loop
+    println!("Streaming query vs reference matrix computation completed in {:?}", start_time.elapsed());
+    Ok(())
+}
+
 /// MinHash implementation
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
