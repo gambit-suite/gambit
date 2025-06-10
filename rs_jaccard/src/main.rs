@@ -407,7 +407,7 @@ fn save_distances(distances: &[f32], path: &PathBuf) -> Result<()> {
     let mut writer = BufWriter::new(file);
     
     for distance in distances {
-        writeln!(writer, "{:.6}", distance)?;
+        writeln!(writer, "{:.4}", distance)?;
     }
     
     Ok(())
@@ -430,7 +430,7 @@ fn save_matrix_csv(matrix: &[Vec<f32>], path: &PathBuf) -> Result<()> {
     // Write matrix rows
     for (i, row) in matrix.iter().enumerate() {
         let mut csv_row = vec![format!("sample_{}", i)];
-        csv_row.extend(row.iter().map(|&x| format!("{:.6}", x)));
+        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
         writer.write_record(&csv_row)?;
     }
     
@@ -471,7 +471,7 @@ fn save_similar_pairs(pairs: &[(usize, usize, f32)], path: &PathBuf) -> Result<(
     
     writer.write_record(&["i", "j", "distance"])?;
     for (i, j, dist) in pairs {
-        writer.write_record(&[i.to_string(), j.to_string(), format!("{:.6}", dist)])?;
+        writer.write_record(&[i.to_string(), j.to_string(), format!("{:.4}", dist)])?;
     }
     
     writer.flush()?;
@@ -530,7 +530,7 @@ fn write_lsh_results(output: &PathBuf, candidates: &[(usize, usize, f32)]) -> Re
     
     writeln!(writer, "i,j,similarity")?;
     for &(i, j, similarity) in candidates {
-        writeln!(writer, "{},{},{:.6}", i, j, similarity)?;
+        writeln!(writer, "{},{},{:.4}", i, j, similarity)?;
     }
     
     Ok(())
@@ -548,7 +548,7 @@ fn save_matrix_csv_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf)
     // Write matrix rows with row IDs
     for (i, row) in matrix.iter().enumerate() {
         let mut csv_row = vec![ids[i].clone()];
-        csv_row.extend(row.iter().map(|&x| format!("{:.6}", x)));
+        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
         writer.write_record(&csv_row)?;
     }
     
@@ -570,13 +570,13 @@ fn save_matrix_csv_with_optional_ids(matrix: &[Vec<f32>], ids: Option<&[String]>
         // Write matrix rows with row IDs
         for (i, row) in matrix.iter().enumerate() {
             let mut csv_row = vec![sample_ids[i].clone()];
-            csv_row.extend(row.iter().map(|&x| format!("{:.6}", x)));
+            csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
             writer.write_record(&csv_row)?;
         }
     } else {
         // Write without IDs (old behavior)
         for row in matrix {
-            let row_str: Vec<String> = row.iter().map(|&x| format!("{:.6}", x)).collect();
+            let row_str: Vec<String> = row.iter().map(|&x| format!("{:.4}", x)).collect();
             writer.write_record(&row_str)?;
         }
     }
@@ -624,7 +624,7 @@ fn save_query_ref_matrix_csv(matrix: &[Vec<f32>], query_ids: &[String], ref_ids:
     // Write matrix rows with query IDs as row labels
     for (i, row) in matrix.iter().enumerate() {
         let mut csv_row = vec![query_ids[i].clone()];
-        csv_row.extend(row.iter().map(|&x| format!("{:.6}", x)));
+        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
         writer.write_record(&csv_row)?;
     }
     
