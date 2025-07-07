@@ -1,15 +1,28 @@
+"""Test the gambit.results module.
+
+Each ResultsExporter subclass is tested by exporting a fake QueryResults instance to a string buffer,
+parsing the exported results and checking the against the original using the functions in the
+.results tests helper module.
+"""
+
+from io import StringIO
+
 import pytest
 
-from gambit.query import QueryResults, QueryResultItem, QueryInput, QueryParams
+from gambit.query import QueryResults, QueryResultItem, QueryParams
 from gambit.classify import ClassifierResult, GenomeMatch
 from gambit.db import ReferenceGenomeSet, Genome
 from gambit.sigs import SignaturesMeta
-from gambit.seq import SequenceFile
-from gambit.results.base import export_to_buffer
-from gambit.results.json import JSONResultsExporter
-from gambit.results.csv import CSVResultsExporter
-from gambit.results.archive import ResultsArchiveReader, ResultsArchiveWriter
-from gambit.results.test import check_json_results, check_csv_results
+from gambit.results import JSONResultsExporter, CSVResultsExporter, ResultsArchiveReader, ResultsArchiveWriter
+from .results import check_json_results, check_csv_results
+
+
+def export_to_buffer(results: QueryResults, exporter) -> StringIO:
+	"""Export query results to a `StringIO` buffer."""
+	buf = StringIO()
+	exporter.export(buf, results)
+	buf.seek(0)
+	return buf
 
 
 @pytest.fixture()
@@ -70,14 +83,15 @@ def results(session):
 	for i, cr in enumerate(classifier_results):
 		predicted = cr.predicted_taxon
 		items.append(QueryResultItem(
-			input=QueryInput(f'query-{i}', SequenceFile(f'query-{i}.fasta', 'fasta')),
+			f'query-{i}',
 			classifier_result=cr,
+			file=f'query-{i}.fasta',
 			report_taxon=None if predicted is None else predicted.parent if i % 4 == 0 else predicted,
 			closest_genomes=[cr.closest_match],
 		))
 
-	# Set one input file to None
-	items[-1].input.file = None
+	# Set one file to None
+	items[-1].file = None
 
 	return QueryResults(
 		items=items,
@@ -93,21 +107,21 @@ def results(session):
 	)
 
 
-def test_json(results):
+def test_json(results: QueryResults):
 	"""Test JSONResultsExporter."""
 	exporter = JSONResultsExporter()
 	buf = export_to_buffer(results, exporter)
 	check_json_results(buf, results, strict=True)
 
 
-def test_csv(results):
+def test_csv(results: QueryResults):
 	"""Test CSVResultsExporter."""
 	exporter = CSVResultsExporter()
 	buf = export_to_buffer(results, exporter)
 	check_csv_results(buf, results, strict=True)
 
 
-def test_results_archive(session, results):
+def test_results_archive(session, results: QueryResults):
 	"""Test ResultArchiveWriter/Reader."""
 	writer = ResultsArchiveWriter()
 	buf = export_to_buffer(results, writer)

@@ -14,12 +14,6 @@ gambit.util.misc
 .. automodule:: gambit.util.misc
 
 
-gambit.util.typing
-------------------
-
-.. automodule:: gambit.util.typing
-
-
 gambit.util.io
 --------------
 
@@ -36,15 +30,13 @@ gambit.util.indexing
 --------------------
 
 .. automodule:: gambit.util.indexing
+    :exclude-members: AdvancedIndexingMixin
+
+    .. autoclass:: AdvancedIndexingMixin
+        :private-members: _check_index, _getitem_int, _getitem_slice, _getitem_int_array, _getitem_bool_array
 
 
 gambit.util.progress
 --------------------
 
 .. automodule:: gambit.util.progress
-
-
-gambit.util.dev
-----------------
-
-.. automodule:: gambit.util.dev

@@ -18,11 +18,11 @@
 # -- Project information -----------------------------------------------------
 
 project = 'GAMBIT'
-copyright = '2021 - 2023, Jared Lumpe'
+copyright = '2021 - 2024, Jared Lumpe'
 author = 'Jared Lumpe'
 
 # The full version, including alpha/beta/rc tags
-release = '1.0.1'
+release = '1.1.0'
 
 
 # -- General configuration ---------------------------------------------------
@@ -50,6 +50,17 @@ templates_path = ['_templates']
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = []
 
+# When debugging broken cross references using nitpick mode (-n option), ignore these errors.
+# This mostly relates to external libraries that have not been linked to using intersphinx.
+nitpick_ignore_regex = [
+	('py:.*', r'click\..*'),
+	('py:.*', r'sqlalchemy\..*'),
+	('py:.*', r'h5py\..*'),
+	('py:.*', r'scipy\..*'),
+	# TypeVar
+	('py:.*', r'(.*\.)?T\d?'),
+]
+
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -76,5 +87,16 @@ autodoc_default_options = {
 autodoc_class_signature = 'separated'
 autodoc_member_order = 'groupwise'
 autodoc_typehints = 'description'
+
+autodoc_type_aliases = {
+    'FilePath': 'FilePath',
+    'DNASeq': 'DNASeq',
+}
+
+intersphinx_mapping = {
+	'python': ('https://docs.python.org/3', None),
+	'numpy': ('https://numpy.org/doc/stable/', None),
+	'Bio': ('https://biopython.org/docs/latest/', None),
+}
 
 todo_include_todos = True
