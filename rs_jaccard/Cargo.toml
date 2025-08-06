@@ -19,6 +19,9 @@ anyhow = "1.0"
 hdf5 = "0.8"
 ndarray = "0.15"
 
+[dev-dependencies]
+tempfile = "3.8"
+
 [profile.release]
 lto = true
 codegen-units = 1
