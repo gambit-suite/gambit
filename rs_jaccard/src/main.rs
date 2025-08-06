@@ -7,9 +7,11 @@ use anyhow::{Result, Context};
 
 mod jaccard;
 mod signatures;
+mod matrix_io;
 
 use jaccard::*;
 use signatures::*;
+use matrix_io::{save_matrix_hdf5, detect_format_from_extension};
 
 #[derive(Parser)]
 #[command(name = "jaccard")]
@@ -89,6 +91,9 @@ enum Commands {
         output: PathBuf,
         #[arg(long, default_value = "upper")]
         method: String,
+        /// Output format: csv, hdf5, binary (auto-detected from extension if not specified)
+        #[arg(long)]
+        format: Option<String>,
         /// Subset of signatures to calculate matrix for (specific indices)
         #[arg(long)]
         subset: Option<Vec<usize>>,
@@ -257,7 +262,7 @@ fn main() -> Result<()> {
             println!("Done! Matrix written to {}", output.display());
         },
         
-        Commands::MatrixSig { signatures, output, method, threads, first_n, .. } => {
+        Commands::MatrixSig { signatures, output, method, format, threads, first_n, .. } => {
             if let Some(t) = threads {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
@@ -287,8 +292,12 @@ fn main() -> Result<()> {
                 (coords, bounds, ids)
             };
 
+            // Auto-detect format from file extension if not specified
+            let output_format = format.clone().unwrap_or_else(|| detect_format_from_extension(output));
+
             let matrix_size = subset_bounds.len() - 1;
             println!("Computing {}x{} distance matrix using {} method...", matrix_size, matrix_size, method);
+            println!("Output format: {}", output_format);
             
             match method.as_str() {
                 "upper" | "rowwise" | "blocked" => {
@@ -300,13 +309,29 @@ fn main() -> Result<()> {
                     };
                     
                     println!("Writing matrix with sample IDs...");
-                    save_matrix_csv_with_ids(&matrix, &subset_ids, output)?;
+                    match output_format.as_str() {
+                        "csv" => {
+                            save_matrix_csv_with_ids(&matrix, &subset_ids, output)?;
+                        },
+                        "hdf5" => {
+                            save_matrix_hdf5(&matrix, &subset_ids, output)?;
+                        },
+                        "binary" => {
+                            save_matrix_binary_with_ids(&matrix, &subset_ids, output)?;
+                        },
+                        _ => anyhow::bail!("Unknown format: '{}'. Use 'csv', 'hdf5', or 'binary'", output_format),
+                    }
                     println!("Matrix saved to {}", output.display());
                 }
                 "rowwise-stream" => {
-                    let file = File::create(output).context("Failed to create output file")?;
-                    let mut writer = csv::Writer::from_writer(BufWriter::new(file));
-                    jaccard_distance_matrix_rowwise_stream(&subset_coords, &subset_bounds, &mut writer, &subset_ids)?;
+                    match output_format.as_str() {
+                        "csv" => {
+                            let file = File::create(output).context("Failed to create output file")?;
+                            let mut writer = csv::Writer::from_writer(BufWriter::new(file));
+                            jaccard_distance_matrix_rowwise_stream(&subset_coords, &subset_bounds, &mut writer, &subset_ids)?;
+                        },
+                        _ => anyhow::bail!("Streaming currently only supports 'csv' format"),
+                    }
                     println!("Matrix saved to {}", output.display());
                 }
                 _ => anyhow::bail!("Unknown method: '{}'. Use 'upper', 'rowwise', 'blocked', or 'rowwise-stream'", method),
@@ -413,57 +438,6 @@ fn save_distances(distances: &[f32], path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn save_matrix_csv(matrix: &[Vec<f32>], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    // Write without IDs (generate simple indices)
-    let n = matrix.len();
-    
-    // Write header row
-    let mut header = vec!["ID".to_string()];
-    for i in 0..n {
-        header.push(format!("sample_{}", i));
-    }
-    writer.write_record(&header)?;
-    
-    // Write matrix rows
-    for (i, row) in matrix.iter().enumerate() {
-        let mut csv_row = vec![format!("sample_{}", i)];
-        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-        writer.write_record(&csv_row)?;
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
-
-fn save_matrix_binary(matrix: &[Vec<f32>], path: &PathBuf) -> Result<()> {
-    use byteorder::{LittleEndian, WriteBytesExt};
-    
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    
-    // Write dimensions
-    writer.write_u32::<LittleEndian>(matrix.len() as u32)?;
-    writer.write_u32::<LittleEndian>(matrix[0].len() as u32)?;
-    
-    // Write matrix data
-    for row in matrix {
-        for &value in row {
-            writer.write_f32::<LittleEndian>(value)?;
-        }
-    }
-    
-    Ok(())
-}
-
-fn save_matrix_json(matrix: &[Vec<f32>], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let writer = BufWriter::new(file);
-    serde_json::to_writer(writer, matrix)?;
-    Ok(())
-}
 
 fn save_similar_pairs(pairs: &[(usize, usize, f32)], path: &PathBuf) -> Result<()> {
     let file = File::create(path)?;
@@ -516,14 +490,6 @@ fn convert_from_json(_input: &PathBuf, _coords_out: &PathBuf, _bounds_out: &Path
     todo!("JSON conversion not implemented yet")
 }
 
-fn write_matrix_results(output: &PathBuf, matrix: &[Vec<f32>]) -> Result<()> {
-    save_matrix_csv(matrix, output)
-}
-
-fn write_matrix_results_with_ids(output: &PathBuf, matrix: &[Vec<f32>], ids: &[String]) -> Result<()> {
-    save_matrix_csv_with_ids(matrix, ids, output)
-}
-
 fn write_lsh_results(output: &PathBuf, candidates: &[(usize, usize, f32)]) -> Result<()> {
     let file = File::create(output)?;
     let mut writer = BufWriter::new(file);
@@ -556,34 +522,6 @@ fn save_matrix_csv_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf)
     Ok(())
 }
 
-// Also update the regular matrix function to include IDs option
-fn save_matrix_csv_with_optional_ids(matrix: &[Vec<f32>], ids: Option<&[String]>, path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    if let Some(sample_ids) = ids {
-        // Write header row (column names)
-        let mut header = vec!["ID".to_string()];
-        header.extend(sample_ids.iter().cloned());
-        writer.write_record(&header)?;
-        
-        // Write matrix rows with row IDs
-        for (i, row) in matrix.iter().enumerate() {
-            let mut csv_row = vec![sample_ids[i].clone()];
-            csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-            writer.write_record(&csv_row)?;
-        }
-    } else {
-        // Write without IDs (old behavior)
-        for row in matrix {
-            let row_str: Vec<String> = row.iter().map(|&x| format!("{:.4}", x)).collect();
-            writer.write_record(&row_str)?;
-        }
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
 
 fn save_matrix_binary_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf) -> Result<()> {
     use byteorder::{LittleEndian, WriteBytesExt};
