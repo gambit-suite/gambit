@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::io::{stdout, Write};
 use anyhow::Result;
 use csv;
+use log::{info, debug, warn};
 
 pub type CoordType = u32;
 pub type BoundType = usize;
@@ -69,7 +70,7 @@ pub fn jaccard_distance_matrix_rowwise(
 ) -> Vec<Vec<ScoreType>> {
     let n = bounds.len() - 1;
     
-    println!("Computing {}x{} distance matrix (rowwise method)...", n, n);
+    info!("Computing {}x{} distance matrix (rowwise method)...", n, n);
     let start_time = std::time::Instant::now();
     
     // Process rows in chunks to show progress
@@ -120,8 +121,8 @@ pub fn jaccard_distance_matrix_rowwise(
         stdout().flush().unwrap();
     }
     
-    println!(); // Move to the next line after the loop
-    println!("Matrix computation completed in {:?}", start_time.elapsed());
+    
+    info!("Matrix computation completed in {:?}", start_time.elapsed());
     result
 }
 
@@ -134,7 +135,7 @@ pub fn jaccard_distance_matrix_rowwise_stream(
 ) -> Result<()> {
     let n = bounds.len() - 1;
 
-    println!(
+    info!(
         "Computing and streaming {}x{} distance matrix (rowwise method)...",
         n, n
     );
@@ -198,8 +199,8 @@ pub fn jaccard_distance_matrix_rowwise_stream(
     }
 
     writer.flush()?;
-    println!(); // Move to the next line after the loop
-    println!("Matrix streaming completed in {:?}", start_time.elapsed());
+    
+    info!("Matrix streaming completed in {:?}", start_time.elapsed());
     Ok(())
 }
 
@@ -212,7 +213,7 @@ pub fn jaccard_distance_matrix_rowwise_stream_hdf5(
 ) -> Result<()> {
     let n = bounds.len() - 1;
 
-    println!(
+    info!(
         "Computing and streaming {}x{} distance matrix to HDF5 (rowwise method)...",
         n, n
     );
@@ -268,8 +269,8 @@ pub fn jaccard_distance_matrix_rowwise_stream_hdf5(
         stdout().flush().unwrap();
     }
 
-    println!();
-    println!("HDF5 matrix streaming completed in {:?}", start_time.elapsed());
+    
+    info!("HDF5 matrix streaming completed in {:?}", start_time.elapsed());
     Ok(())
 }
 
@@ -286,7 +287,7 @@ pub fn jaccard_distance_matrix_upper_triangle(
         .collect();
     
     let total_pairs = pairs.len();
-    println!("Computing {} pairs for {}x{} matrix...", total_pairs, n, n);
+    info!("Computing {} pairs for {}x{} matrix...", total_pairs, n, n);
     
     let start_time = std::time::Instant::now();
     let chunk_size = 10000;

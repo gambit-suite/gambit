@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use anyhow::{Result, Context};
+use log::{info, debug, error, warn};
 // use rayon::prelude::*;
 
 mod jaccard;
@@ -174,6 +175,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
     
     match &cli.command {
@@ -182,21 +184,21 @@ fn main() -> Result<()> {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
             
-            println!("Loading data...");
+            info!("Loading data...");
             let query_coords = load_coords(&query)?;
             let ref_coords = load_coords(&reference)?;
             let ref_bounds = load_bounds(&bounds)?;
             
-            println!("Computing distances for {} reference sets...", ref_bounds.len() - 1);
+            info!("Computing distances for {} reference sets...", ref_bounds.len() - 1);
             let start = std::time::Instant::now();
             
             let distances = jaccard_distances_parallel(&query_coords, &ref_coords, &ref_bounds);
             
             let elapsed = start.elapsed();
-            println!("Computed {} distances in {:.2?}", distances.len(), elapsed);
+            info!("Computed {} distances in {:.2?}", distances.len(), elapsed);
             
             save_distances(&distances, &output)?;
-            println!("Results saved to {}", output.display());
+            info!("Results saved to {}", output.display());
         },
         
         Commands::QuerySig { query_sig, ref_sig, output, method, threads } => {
@@ -204,18 +206,18 @@ fn main() -> Result<()> {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
             
-            println!("Loading signature files...");
+            info!("Loading signature files...");
             let query_sig_data = read_signatures(query_sig)?;
-            println!("Query signature data loaded");
+            debug!("Query signature data loaded");
             let ref_sig_data = read_signatures(ref_sig)?;
-            println!("Reference signature data loaded");
+            debug!("Reference signature data loaded");
             
-            println!("Preparing data for pairwise Jaccard calculation...");
+            info!("Preparing data for pairwise Jaccard calculation...");
             let (ref_coords, ref_bounds, ref_ids) = load_signatures_for_jaccard(&ref_sig_data)?;
             let (query_coords, query_bounds, query_ids) = load_signatures_for_jaccard(&query_sig_data)?;
             
-            println!("Calculating pairwise Jaccard distances...");
-            println!("Query signatures: {}, Reference signatures: {}", query_ids.len(), ref_ids.len());
+            info!("Calculating pairwise Jaccard distances...");
+            info!("Query signatures: {}, Reference signatures: {}", query_ids.len(), ref_ids.len());
             
             match method.as_str() {
                 "rowwise" | "blocked" => {
@@ -225,15 +227,15 @@ fn main() -> Result<()> {
                         _ => unreachable!(),
                     };
                     
-                    println!("Writing matrix with query and reference IDs...");
+                    info!("Writing matrix with query and reference IDs...");
                     save_query_ref_matrix_csv(&matrix, &query_ids, &ref_ids, output)?;
-                    println!("Results saved to {}", output.display());
+                    info!("Results saved to {}", output.display());
                 }
                 "rowwise-stream" => {
                     let file = File::create(output).context("Failed to create output file")?;
                     let mut writer = csv::Writer::from_writer(BufWriter::new(file));
                     jaccard_distance_matrix_query_vs_ref_stream(&query_coords, &query_bounds, &ref_coords, &ref_bounds, &mut writer, &query_ids, &ref_ids)?;
-                    println!("Results saved to {}", output.display());
+                    info!("Results saved to {}", output.display());
                 }
                 _ => anyhow::bail!("Unknown method: '{}'. Use 'rowwise', 'blocked', or 'rowwise-stream'", method),
             }
@@ -267,13 +269,13 @@ fn main() -> Result<()> {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
             
-            println!("Loading signature file...");
+            info!("Loading signature file...");
             let sig_data = read_signatures(signatures)?;
             
             // Determine which subset of data to use
             let (subset_coords, subset_bounds, subset_ids) = if let Some(count) = first_n {
                 let n = std::cmp::min(*count, sig_data.kmers.len());
-                println!("Using first {} signatures", n);
+                info!("Using first {} signatures", n);
 
                 let mut sub_coords = Vec::new();
                 let mut sub_bounds = vec![0];
@@ -287,7 +289,7 @@ fn main() -> Result<()> {
 
             } else {
                 // Use all signatures if no subset is specified
-                println!("Using all {} signatures", sig_data.kmers.len());
+                info!("Using all {} signatures", sig_data.kmers.len());
                 let (coords, bounds, ids) = load_signatures_for_jaccard(&sig_data)?;
                 (coords, bounds, ids)
             };
@@ -296,8 +298,8 @@ fn main() -> Result<()> {
             let output_format = format.clone().unwrap_or_else(|| detect_format_from_extension(output));
 
             let matrix_size = subset_bounds.len() - 1;
-            println!("Computing {}x{} distance matrix using {} method...", matrix_size, matrix_size, method);
-            println!("Output format: {}", output_format);
+            info!("Computing {}x{} distance matrix using {} method...", matrix_size, matrix_size, method);
+            info!("Output format: {}", output_format);
             
             match method.as_str() {
                 "upper" | "rowwise" | "blocked" => {
@@ -308,7 +310,7 @@ fn main() -> Result<()> {
                         _ => unreachable!(),
                     };
                     
-                    println!("Writing matrix with sample IDs...");
+                    info!("Writing matrix with sample IDs...");
                     match output_format.as_str() {
                         "csv" => {
                             save_matrix_csv_with_ids(&matrix, &subset_ids, output)?;
@@ -321,7 +323,7 @@ fn main() -> Result<()> {
                         },
                         _ => anyhow::bail!("Unknown format: '{}'. Use 'csv', 'hdf5', or 'binary'", output_format),
                     }
-                    println!("Matrix saved to {}", output.display());
+                    info!("Matrix saved to {}", output.display());
                 }
                 "rowwise-stream" => {
                     match output_format.as_str() {
@@ -337,7 +339,7 @@ fn main() -> Result<()> {
                         },
                         _ => anyhow::bail!("Streaming supports 'csv' and 'hdf5' formats"),
                     }
-                    println!("Matrix saved to {}", output.display());
+                    info!("Matrix saved to {}", output.display());
                 }
                 _ => anyhow::bail!("Unknown method: '{}'. Use 'upper', 'rowwise', 'blocked', or 'rowwise-stream'", method),
             };

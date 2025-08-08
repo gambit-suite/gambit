@@ -4,6 +4,7 @@ use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::jaccard::{CoordType, BoundType};
+use log::{info, debug, warn};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KmerSpec {
@@ -87,38 +88,38 @@ pub fn read_signatures(path: &Path) -> Result<SignatureData> {
 
     // Read the actual IDs from HDF5 file with detailed debugging
     let ids: Vec<String> = if let Ok(ids_dataset) = file.dataset("ids") {
-        println!("[DEBUG] Attempting to read IDs from HDF5 dataset '/ids'...");
+        debug!("Attempting to read IDs from HDF5 dataset '/ids'...");
 
         // --- ATTEMPT 1: Using read_1d with VarLenUnicode (Theoretically correct for UTF-8) ---
         match ids_dataset.read_1d::<hdf5::types::VarLenUnicode>() {
             Ok(ids_array) => {
-                println!("[SUCCESS] Read {} IDs using read_1d<VarLenUnicode>.", ids_array.len());
+                debug!("Read {} IDs using read_1d<VarLenUnicode>.", ids_array.len());
                 let ids_vec: Vec<String> = ids_array.iter().map(|s| s.to_string()).collect();
                 if !ids_vec.is_empty() {
-                    println!("First few IDs: {:?}", &ids_vec[0..std::cmp::min(5, ids_vec.len())]);
+                    debug!("First few IDs: {:?}", &ids_vec[0..std::cmp::min(5, ids_vec.len())]);
                 }
                 ids_vec
             },
             Err(e) => {
-                println!("[ERROR 1] Failed to read as 1D VarLenUnicode: {}", e);
+                debug!("Failed to read as 1D VarLenUnicode: {}", e);
 
                 // --- ATTEMPT 2: Using read_1d with VarLenAscii (A common alternative) ---
                 match ids_dataset.read_1d::<hdf5::types::VarLenAscii>() {
                     Ok(ids_array) => {
-                        println!("[SUCCESS] Read {} IDs using read_1d<VarLenAscii>.", ids_array.len());
+                        info!("Read {} IDs using read_1d<VarLenAscii>.", ids_array.len());
                         let ids_vec: Vec<String> = ids_array.iter().map(|s| s.to_string()).collect();
                         ids_vec
                     },
                     Err(e2) => {
-                        println!("[ERROR 2] Failed to read as 1D VarLenAscii: {}", e2);
-                        println!("[FALLBACK] Generating default sample IDs because both attempts failed.");
+                        debug!("Failed to read as 1D VarLenAscii: {}", e2);
+                        warn!("Generating default sample IDs because both attempts failed.");
                         (0..kmers.len()).map(|i| format!("sample_{}", i)).collect()
                     }
                 }
             }
         }
     } else {
-        println!("[ERROR] No 'ids' dataset found. Generating default sample IDs.");
+        warn!("No 'ids' dataset found. Generating default sample IDs.");
         (0..kmers.len()).map(|i| format!("sample_{}", i)).collect()
     };
     

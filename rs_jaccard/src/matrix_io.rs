@@ -2,6 +2,7 @@ use anyhow::{Result, Context};
 use hdf5::{File, Dataset};
 use ndarray::Array2;
 use std::path::Path;
+use log::{info, debug, warn};
 
 use crate::jaccard::{ScoreType};
 
@@ -26,7 +27,7 @@ pub fn save_matrix_hdf5(
         ));
     }
     
-    println!("Writing {}x{} matrix with {} genome IDs to HDF5 file: {}", n, n, ids.len(), output_path.display());
+    info!("Writing {}x{} matrix with {} genome IDs to HDF5 file: {}", n, n, ids.len(), output_path.display());
     let file = File::create(output_path)
         .with_context(|| format!("Failed to create HDF5 file: {}", output_path.display()))?;
 
@@ -79,14 +80,14 @@ pub fn save_matrix_hdf5(
     ids_attr.write_scalar(&hdf5::types::VarLenAscii::from_ascii(b"Genome identifiers for rows and columns").unwrap_or_default())
         .context("Failed to write IDs description attribute")?;
     
-    println!("HDF5 matrix with genome IDs saved successfully");
+    info!("HDF5 matrix with genome IDs saved successfully");
     Ok(())
 }
 
 /// THis is used for testing mainly, but could be useful for when we want to load HDF5 matrices directly
 /// Returns (matrix, genome_ids)
 pub fn load_matrix_hdf5(input_path: &Path) -> Result<(Vec<Vec<ScoreType>>, Vec<String>)> {
-    println!("Loading matrix and genome IDs from HDF5 file: {}", input_path.display());
+    info!("Loading matrix and genome IDs from HDF5 file: {}", input_path.display());
     let file = File::open(input_path)
         .with_context(|| format!("Failed to open HDF5 file: {}", input_path.display()))?;
     
@@ -119,7 +120,7 @@ pub fn load_matrix_hdf5(input_path: &Path) -> Result<(Vec<Vec<ScoreType>>, Vec<S
         ));
     }
     
-    println!("Loaded {}x{} matrix with {} genome IDs", n, n, ids.len());
+    info!("Loaded {}x{} matrix with {} genome IDs", n, n, ids.len());
     Ok((matrix, ids))
 }
 
@@ -137,7 +138,7 @@ impl Hdf5StreamWriter {
     pub fn new(path: &Path, n_cols: usize, ids: &[String]) -> Result<Self> {
         let n_rows = ids.len();
         
-        println!("Creating HDF5 streaming writer for {}x{} matrix at {}", n_rows, n_cols, path.display());
+        info!("Creating HDF5 streaming writer for {}x{} matrix at {}", n_rows, n_cols, path.display());
         
         let file = File::create(path)
             .with_context(|| format!("Failed to create HDF5 file: {}", path.display()))?;
