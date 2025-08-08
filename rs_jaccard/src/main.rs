@@ -11,7 +11,7 @@ mod matrix_io;
 
 use jaccard::*;
 use signatures::*;
-use matrix_io::{save_matrix_hdf5, detect_format_from_extension};
+use matrix_io::{save_matrix_hdf5, detect_format_from_extension, Hdf5StreamWriter};
 
 #[derive(Parser)]
 #[command(name = "jaccard")]
@@ -330,7 +330,12 @@ fn main() -> Result<()> {
                             let mut writer = csv::Writer::from_writer(BufWriter::new(file));
                             jaccard_distance_matrix_rowwise_stream(&subset_coords, &subset_bounds, &mut writer, &subset_ids)?;
                         },
-                        _ => anyhow::bail!("Streaming currently only supports 'csv' format"),
+                        "hdf5" => {
+                            let n_cols = subset_bounds.len() - 1;
+                            let mut hdf5_writer = Hdf5StreamWriter::new(output, n_cols, &subset_ids)?;
+                            jaccard_distance_matrix_rowwise_stream_hdf5(&subset_coords, &subset_bounds, &mut hdf5_writer)?;
+                        },
+                        _ => anyhow::bail!("Streaming supports 'csv' and 'hdf5' formats"),
                     }
                     println!("Matrix saved to {}", output.display());
                 }

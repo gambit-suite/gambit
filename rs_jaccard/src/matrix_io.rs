@@ -1,5 +1,5 @@
 use anyhow::{Result, Context};
-use hdf5::File;
+use hdf5::{File, Dataset};
 use ndarray::Array2;
 use std::path::Path;
 
@@ -120,6 +120,90 @@ pub fn load_matrix_hdf5(input_path: &Path) -> Result<(Vec<Vec<ScoreType>>, Vec<S
     
     println!("Loaded {}x{} matrix with {} genome IDs", n, n, ids.len());
     Ok((matrix, ids))
+}
+
+/// HDF5 streaming writer for large matrices using chunked datasets
+/// Adapted from this Example: https://github.com/aldanor/hdf5-rust/blob/master/hdf5/examples/chunking.rs
+pub struct Hdf5StreamWriter {
+    matrix_dataset: Dataset,
+    current_row: usize,
+    n_cols: usize,
+}
+
+impl Hdf5StreamWriter {
+    /// Create a new "streaming (really chunking)" writer like for csv
+    /// Format is specific to how we expect it for gambit, so probably good to standardize is somewhere
+    pub fn new(path: &Path, n_cols: usize, ids: &[String]) -> Result<Self> {
+        let n_rows = ids.len();
+        
+        println!("Creating HDF5 streaming writer for {}x{} matrix at {}", n_rows, n_cols, path.display());
+        
+        let file = File::create(path)
+            .with_context(|| format!("Failed to create HDF5 file: {}", path.display()))?;
+
+        // Create chunked matrix dataset
+        let matrix_dataset = file
+            .new_dataset::<f32>()
+            .chunk((1, n_cols))  // each chunk is one row
+            .shape((1.., n_cols)) // unlimited first dimension, fixed columns
+            .deflate(3)  // fast, but decent compression, can expose this as an input param later (0,1,3,6,9)
+            .create("distances")
+            .context("Failed to create distances dataset")?;
+        
+        // Create then write genome_ids
+        let ids_dataset = file
+            .new_dataset::<hdf5::types::VarLenAscii>()
+            .shape([n_rows])
+            .create("genome_ids")
+            .context("Failed to create genome_ids dataset")?;
+        
+        let ascii_ids: Vec<hdf5::types::VarLenAscii> = ids.iter()
+            .map(|s| hdf5::types::VarLenAscii::from_ascii(s.as_bytes()).unwrap_or_default())
+            .collect();
+        
+        ids_dataset.write(&ascii_ids)
+            .context("Failed to write genome IDs to HDF5")?;
+        
+        // Add metadata attributes
+        let matrix_attr = matrix_dataset.new_attr::<hdf5::types::VarLenAscii>()
+            .create("description")
+            .context("Failed to create description attribute")?;
+        matrix_attr.write_scalar(&hdf5::types::VarLenAscii::from_ascii(b"Jaccard distance matrix").unwrap_or_default())
+            .context("Failed to write description attribute")?;
+
+        Ok(Self {
+            matrix_dataset,
+            current_row: 0,
+            n_cols,
+        })
+    }
+
+    /// Write a single row of data to the HDF5 dataset
+    pub fn write_row(&mut self, row_data: &[ScoreType]) -> Result<()> {
+        if row_data.len() != self.n_cols {
+            return Err(anyhow::anyhow!(
+                "Row data length ({}) doesn't match expected columns ({})", 
+                row_data.len(), self.n_cols
+            ));
+        }
+
+        // Resize dataset to accommodate new row if needed
+        let current_shape = self.matrix_dataset.shape();
+        if self.current_row >= current_shape[0] {
+            self.matrix_dataset.resize((self.current_row + 1, self.n_cols))
+                .context("Failed to resize matrix dataset")?;
+        }
+
+        // Convert row data to ndarray and write as slice -- this seemed like most sensible way for chunking
+        let row_array = ndarray::Array1::from_vec(row_data.to_vec());
+        self.matrix_dataset
+            .write_slice(&row_array, (self.current_row, ..))
+            .with_context(|| format!("Failed to write row {} to HDF5", self.current_row))?;
+        
+        self.current_row += 1;
+        Ok(())
+    }
+
 }
 
 /// Utility to determine output format from file extension

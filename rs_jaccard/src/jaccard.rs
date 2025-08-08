@@ -203,6 +203,76 @@ pub fn jaccard_distance_matrix_rowwise_stream(
     Ok(())
 }
 
+/// Row-wise parallel processing with streaming HDF5 output
+/// This follows same pattern as jaccard_distance_matrix_rowwise_stream for writing to csv
+pub fn jaccard_distance_matrix_rowwise_stream_hdf5(
+    all_coords: &[CoordType],
+    bounds: &[BoundType],
+    hdf5_writer: &mut crate::matrix_io::Hdf5StreamWriter,
+) -> Result<()> {
+    let n = bounds.len() - 1;
+
+    println!(
+        "Computing and streaming {}x{} distance matrix to HDF5 (rowwise method)...",
+        n, n
+    );
+    let start_time = std::time::Instant::now();
+
+    // Process rows in chunks to show progress
+    let chunk_size = 50;
+
+    for chunk_start in (0..n).step_by(chunk_size) {
+        let chunk_end = std::cmp::min(chunk_start + chunk_size, n);
+
+        let mut chunk_results: Vec<(usize, Vec<ScoreType>)> = (chunk_start..chunk_end)
+            .into_par_iter()
+            .map(|i| {
+                let begin_i = bounds[i];
+                let end_i = bounds[i + 1];
+                let coords_i = &all_coords[begin_i..end_i];
+
+                let mut row = vec![0.0; n];
+
+                for j in 0..n {
+                    if i != j {
+                        let begin_j = bounds[j];
+                        let end_j = bounds[j + 1];
+                        let coords_j = &all_coords[begin_j..end_j];
+                        row[j] = jaccard_distance_core(coords_i, coords_j);
+                    }
+                }
+
+                (i, row)
+            })
+            .collect();
+
+        // Sort results by row index to ensure correct order in HDF5
+        chunk_results.sort_unstable_by_key(|k| k.0);
+
+        for (_i, row) in chunk_results {
+            hdf5_writer.write_row(&row)?;
+        }
+
+        let elapsed = start_time.elapsed();
+        let progress = (chunk_end as f64 / n as f64) * 100.0;
+        let eta_seconds = if chunk_end > 0 {
+            (elapsed.as_secs_f64() / chunk_end as f64) * (n - chunk_end) as f64
+        } else {
+            0.0
+        };
+
+        print!(
+            "\rProgress: {}/{} ({:.1}%) - Elapsed: {:?} - ETA: {:.0}s ",
+            chunk_end, n, progress, elapsed, eta_seconds
+        );
+        stdout().flush().unwrap();
+    }
+
+    println!();
+    println!("HDF5 matrix streaming completed in {:?}", start_time.elapsed());
+    Ok(())
+}
+
 /// Upper triangle computation with simple progress
 pub fn jaccard_distance_matrix_upper_triangle(
     all_coords: &[CoordType],
