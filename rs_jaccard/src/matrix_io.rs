@@ -33,6 +33,7 @@ pub fn save_matrix_hdf5(
     //Storing data matrix and genome ids separately, but linked by index -- I believe this is the best practice for HDF5
     
     // Create the dataset for the matrix
+    // Default deflate value is 1
     let matrix_dataset = file
         .new_dataset::<f32>()
         .shape([n, n])
