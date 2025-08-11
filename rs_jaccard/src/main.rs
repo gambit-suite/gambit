@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::PathBuf;
 use anyhow::{Result, Context};
-use log::{info, debug, error, warn};
+use log::{info, debug};
 // use rayon::prelude::*;
 
 mod jaccard;
@@ -12,7 +12,14 @@ mod matrix_io;
 
 use jaccard::*;
 use signatures::*;
-use matrix_io::{save_matrix_hdf5, detect_format_from_extension, Hdf5StreamWriter};
+use matrix_io::{
+    detect_format_from_extension,
+    hdf5::{save_matrix as save_matrix_hdf5, StreamWriter as Hdf5StreamWriter},
+    csv::{save_distances, save_similar_pairs, save_matrix_with_ids as save_matrix_csv_with_ids, 
+          save_query_ref_matrix as save_query_ref_matrix_csv, write_lsh_results},
+    binary::save_matrix_with_ids as save_matrix_binary_with_ids,
+    convert::{from_csv as convert_from_csv, from_fasta as convert_from_fasta, from_json as convert_from_json}
+};
 
 #[derive(Parser)]
 #[command(name = "jaccard")]
@@ -404,6 +411,7 @@ fn main() -> Result<()> {
 }
 
 // File I/O functions
+// CLI specific, keep here
 fn load_coords(path: &PathBuf) -> Result<Vec<u32>> {
     let file = File::open(path).context("Failed to open coordinates file")?;
     let reader = BufReader::new(file);
@@ -419,6 +427,7 @@ fn load_coords(path: &PathBuf) -> Result<Vec<u32>> {
     Ok(coords)
 }
 
+// ClI specific, keep here
 fn load_bounds(path: &PathBuf) -> Result<Vec<usize>> {
     let file = File::open(path).context("Failed to open bounds file")?;
     let reader = BufReader::new(file);
@@ -432,147 +441,4 @@ fn load_bounds(path: &PathBuf) -> Result<Vec<usize>> {
     }
     
     Ok(bounds)
-}
-
-fn save_distances(distances: &[f32], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    
-    for distance in distances {
-        writeln!(writer, "{:.4}", distance)?;
-    }
-    
-    Ok(())
-}
-
-
-fn save_similar_pairs(pairs: &[(usize, usize, f32)], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    writer.write_record(&["i", "j", "distance"])?;
-    for (i, j, dist) in pairs {
-        writer.write_record(&[i.to_string(), j.to_string(), format!("{:.4}", dist)])?;
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
-
-// Format conversion functions
-fn convert_from_csv(input: &PathBuf, coords_out: &PathBuf, bounds_out: &PathBuf) -> Result<()> {
-    let file = File::open(input)?;
-    let mut reader = csv::Reader::from_reader(file);
-    
-    let coords_file = File::create(coords_out)?;
-    let mut coords_writer = BufWriter::new(coords_file);
-    
-    let bounds_file = File::create(bounds_out)?;
-    let mut bounds_writer = BufWriter::new(bounds_file);
-    
-    let mut current_pos = 0;
-    writeln!(bounds_writer, "{}", current_pos)?; // Start with 0
-    
-    for result in reader.records() {
-        let record = result?;
-        for field in record.iter() {
-            if !field.trim().is_empty() {
-                writeln!(coords_writer, "{}", field.trim())?;
-                current_pos += 1;
-            }
-        }
-        writeln!(bounds_writer, "{}", current_pos)?;
-    }
-    
-    Ok(())
-}
-
-fn convert_from_fasta(_input: &PathBuf, _coords_out: &PathBuf, _bounds_out: &PathBuf) -> Result<()> {
-    // Implement FASTA to k-mer conversion
-    todo!("FASTA conversion not implemented yet")
-}
-
-fn convert_from_json(_input: &PathBuf, _coords_out: &PathBuf, _bounds_out: &PathBuf) -> Result<()> {
-    // Implement JSON to k-mer conversion
-    todo!("JSON conversion not implemented yet")
-}
-
-fn write_lsh_results(output: &PathBuf, candidates: &[(usize, usize, f32)]) -> Result<()> {
-    let file = File::create(output)?;
-    let mut writer = BufWriter::new(file);
-    
-    writeln!(writer, "i,j,similarity")?;
-    for &(i, j, similarity) in candidates {
-        writeln!(writer, "{},{},{:.4}", i, j, similarity)?;
-    }
-    
-    Ok(())
-}
-
-fn save_matrix_csv_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    // Write header row (column names)
-    let mut header = vec!["".to_string()];
-    header.extend(ids.iter().cloned());
-    writer.write_record(&header)?;
-    
-    // Write matrix rows with row IDs
-    for (i, row) in matrix.iter().enumerate() {
-        let mut csv_row = vec![ids[i].clone()];
-        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-        writer.write_record(&csv_row)?;
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
-
-
-fn save_matrix_binary_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf) -> Result<()> {
-    use byteorder::{LittleEndian, WriteBytesExt};
-    
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    
-    // Write header
-    writer.write_u32::<LittleEndian>(matrix.len() as u32)?; // Matrix size
-    writer.write_u32::<LittleEndian>(4)?; // sizeof(f32)
-    
-    // Write IDs (length-prefixed strings)
-    for id in ids {
-        let id_bytes = id.as_bytes();
-        writer.write_u32::<LittleEndian>(id_bytes.len() as u32)?;
-        writer.write_all(id_bytes)?;
-    }
-    
-    // Write matrix data
-    for row in matrix {
-        for &value in row {
-            writer.write_f32::<LittleEndian>(value)?;
-        }
-    }
-    
-    Ok(())
-}
-
-fn save_query_ref_matrix_csv(matrix: &[Vec<f32>], query_ids: &[String], ref_ids: &[String], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    // Write header row (column names: empty first column, then reference IDs)
-    let mut header = vec!["".to_string()];
-    header.extend(ref_ids.iter().cloned());
-    writer.write_record(&header)?;
-    
-    // Write matrix rows with query IDs as row labels
-    for (i, row) in matrix.iter().enumerate() {
-        let mut csv_row = vec![query_ids[i].clone()];
-        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-        writer.write_record(&csv_row)?;
-    }
-    
-    writer.flush()?;
-    Ok(())
 }

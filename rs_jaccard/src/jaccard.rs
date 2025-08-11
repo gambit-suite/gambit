@@ -209,7 +209,7 @@ pub fn jaccard_distance_matrix_rowwise_stream(
 pub fn jaccard_distance_matrix_rowwise_stream_hdf5(
     all_coords: &[CoordType],
     bounds: &[BoundType],
-    hdf5_writer: &mut crate::matrix_io::Hdf5StreamWriter,
+    hdf5_writer: &mut crate::matrix_io::hdf5::StreamWriter,
 ) -> Result<()> {
     let n = bounds.len() - 1;
 
