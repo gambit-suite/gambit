@@ -1,11 +1,11 @@
 use rayon::prelude::*;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::io::{stdout, Write};
 use anyhow::Result;
 use csv;
-use log::{info, debug, warn};
-
+use log::{info};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 pub type CoordType = u32;
 pub type BoundType = usize;
 pub type ScoreType = f32;
@@ -639,9 +639,6 @@ pub fn jaccard_distance_matrix_query_vs_ref_stream(
     Ok(())
 }
 
-/// MinHash implementation
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 pub fn compute_minhash(coords: &[CoordType], num_hashes: usize, hash_seeds: &[u64]) -> Vec<u32> {
     let mut signature = vec![u32::MAX; num_hashes];

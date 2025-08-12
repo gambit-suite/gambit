@@ -1,6 +1,5 @@
-use anyhow::{Result, Context, anyhow};
+use anyhow::{Result, Context};
 use hdf5::File;
-use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::jaccard::{CoordType, BoundType};
@@ -156,14 +155,6 @@ pub fn read_signatures(path: &Path) -> Result<SignatureData> {
     })
 }
 
-// Helper functions
-// Load a single signature from a SignatureData object
-pub fn load_query_signature(sig_data: &SignatureData, query_idx: usize) -> Result<Vec<CoordType>> {
-    if query_idx >= sig_data.kmers.len() {
-        return Err(anyhow!("Query index {} out of bounds", query_idx));
-    }
-    Ok(sig_data.kmers[query_idx].clone())
-}
 
 pub fn load_signatures_for_jaccard(sig_data: &SignatureData) -> Result<(Vec<CoordType>, Vec<BoundType>, Vec<String>)> {
     let (flat_coords, bounds) = flatten_signatures(sig_data);

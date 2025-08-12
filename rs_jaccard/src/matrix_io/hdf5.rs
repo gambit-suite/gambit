@@ -87,6 +87,8 @@ pub fn save_matrix(
 
 /// Load matrix from HDF5 format
 /// Returns (matrix, genome_ids)
+/// Use only for testing, don't want compiler to complain
+#[cfg(test)]
 pub fn load_matrix(input_path: &Path) -> Result<(Vec<Vec<ScoreType>>, Vec<String>)> {
     info!("Loading matrix and genome IDs from HDF5 file: {}", input_path.display());
     let file = Hdf5File::open(input_path)
