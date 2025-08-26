@@ -1,10 +1,11 @@
 use rayon::prelude::*;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::io::{stdout, Write};
 use anyhow::Result;
 use csv;
-
+use log::{info};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 pub type CoordType = u32;
 pub type BoundType = usize;
 pub type ScoreType = f32;
@@ -69,7 +70,7 @@ pub fn jaccard_distance_matrix_rowwise(
 ) -> Vec<Vec<ScoreType>> {
     let n = bounds.len() - 1;
     
-    println!("Computing {}x{} distance matrix (rowwise method)...", n, n);
+    info!("Computing {}x{} distance matrix (rowwise method)...", n, n);
     let start_time = std::time::Instant::now();
     
     // Process rows in chunks to show progress
@@ -120,8 +121,8 @@ pub fn jaccard_distance_matrix_rowwise(
         stdout().flush().unwrap();
     }
     
-    println!(); // Move to the next line after the loop
-    println!("Matrix computation completed in {:?}", start_time.elapsed());
+    
+    info!("Matrix computation completed in {:?}", start_time.elapsed());
     result
 }
 
@@ -134,7 +135,7 @@ pub fn jaccard_distance_matrix_rowwise_stream(
 ) -> Result<()> {
     let n = bounds.len() - 1;
 
-    println!(
+    info!(
         "Computing and streaming {}x{} distance matrix (rowwise method)...",
         n, n
     );
@@ -198,8 +199,78 @@ pub fn jaccard_distance_matrix_rowwise_stream(
     }
 
     writer.flush()?;
-    println!(); // Move to the next line after the loop
-    println!("Matrix streaming completed in {:?}", start_time.elapsed());
+    
+    info!("Matrix streaming completed in {:?}", start_time.elapsed());
+    Ok(())
+}
+
+/// Row-wise parallel processing with streaming HDF5 output
+/// This follows same pattern as jaccard_distance_matrix_rowwise_stream for writing to csv
+pub fn jaccard_distance_matrix_rowwise_stream_hdf5(
+    all_coords: &[CoordType],
+    bounds: &[BoundType],
+    hdf5_writer: &mut crate::matrix_io::hdf5::StreamWriter,
+) -> Result<()> {
+    let n = bounds.len() - 1;
+
+    info!(
+        "Computing and streaming {}x{} distance matrix to HDF5 (rowwise method)...",
+        n, n
+    );
+    let start_time = std::time::Instant::now();
+
+    // Process rows in chunks to show progress
+    let chunk_size = 50;
+
+    for chunk_start in (0..n).step_by(chunk_size) {
+        let chunk_end = std::cmp::min(chunk_start + chunk_size, n);
+
+        let mut chunk_results: Vec<(usize, Vec<ScoreType>)> = (chunk_start..chunk_end)
+            .into_par_iter()
+            .map(|i| {
+                let begin_i = bounds[i];
+                let end_i = bounds[i + 1];
+                let coords_i = &all_coords[begin_i..end_i];
+
+                let mut row = vec![0.0; n];
+
+                for j in 0..n {
+                    if i != j {
+                        let begin_j = bounds[j];
+                        let end_j = bounds[j + 1];
+                        let coords_j = &all_coords[begin_j..end_j];
+                        row[j] = jaccard_distance_core(coords_i, coords_j);
+                    }
+                }
+
+                (i, row)
+            })
+            .collect();
+
+        // Sort results by row index to ensure correct order in HDF5
+        chunk_results.sort_unstable_by_key(|k| k.0);
+
+        for (_i, row) in chunk_results {
+            hdf5_writer.write_row(&row)?;
+        }
+
+        let elapsed = start_time.elapsed();
+        let progress = (chunk_end as f64 / n as f64) * 100.0;
+        let eta_seconds = if chunk_end > 0 {
+            (elapsed.as_secs_f64() / chunk_end as f64) * (n - chunk_end) as f64
+        } else {
+            0.0
+        };
+
+        print!(
+            "\rProgress: {}/{} ({:.1}%) - Elapsed: {:?} - ETA: {:.0}s ",
+            chunk_end, n, progress, elapsed, eta_seconds
+        );
+        stdout().flush().unwrap();
+    }
+
+    
+    info!("HDF5 matrix streaming completed in {:?}", start_time.elapsed());
     Ok(())
 }
 
@@ -216,7 +287,7 @@ pub fn jaccard_distance_matrix_upper_triangle(
         .collect();
     
     let total_pairs = pairs.len();
-    println!("Computing {} pairs for {}x{} matrix...", total_pairs, n, n);
+    info!("Computing {} pairs for {}x{} matrix...", total_pairs, n, n);
     
     let start_time = std::time::Instant::now();
     let chunk_size = 10000;
@@ -568,9 +639,6 @@ pub fn jaccard_distance_matrix_query_vs_ref_stream(
     Ok(())
 }
 
-/// MinHash implementation
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 pub fn compute_minhash(coords: &[CoordType], num_hashes: usize, hash_seeds: &[u64]) -> Vec<u32> {
     let mut signature = vec![u32::MAX; num_hashes];

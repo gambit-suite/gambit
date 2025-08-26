@@ -1,15 +1,25 @@
 use clap::{Parser, Subcommand};
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::PathBuf;
 use anyhow::{Result, Context};
+use log::{info, debug};
 // use rayon::prelude::*;
 
 mod jaccard;
 mod signatures;
+mod matrix_io;
 
 use jaccard::*;
 use signatures::*;
+use matrix_io::{
+    detect_format_from_extension,
+    hdf5::{save_matrix as save_matrix_hdf5, StreamWriter as Hdf5StreamWriter},
+    csv::{save_distances, save_similar_pairs, save_matrix_with_ids as save_matrix_csv_with_ids, 
+          save_query_ref_matrix as save_query_ref_matrix_csv, write_lsh_results},
+    binary::save_matrix_with_ids as save_matrix_binary_with_ids,
+    convert::{from_csv as convert_from_csv, from_fasta as convert_from_fasta, from_json as convert_from_json}
+};
 
 #[derive(Parser)]
 #[command(name = "jaccard")]
@@ -89,6 +99,9 @@ enum Commands {
         output: PathBuf,
         #[arg(long, default_value = "upper")]
         method: String,
+        /// Output format: csv, hdf5, binary (auto-detected from extension if not specified)
+        #[arg(long)]
+        format: Option<String>,
         /// Subset of signatures to calculate matrix for (specific indices)
         #[arg(long)]
         subset: Option<Vec<usize>>,
@@ -169,6 +182,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
     
     match &cli.command {
@@ -177,21 +191,21 @@ fn main() -> Result<()> {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
             
-            println!("Loading data...");
+            info!("Loading data...");
             let query_coords = load_coords(&query)?;
             let ref_coords = load_coords(&reference)?;
             let ref_bounds = load_bounds(&bounds)?;
             
-            println!("Computing distances for {} reference sets...", ref_bounds.len() - 1);
+            info!("Computing distances for {} reference sets...", ref_bounds.len() - 1);
             let start = std::time::Instant::now();
             
             let distances = jaccard_distances_parallel(&query_coords, &ref_coords, &ref_bounds);
             
             let elapsed = start.elapsed();
-            println!("Computed {} distances in {:.2?}", distances.len(), elapsed);
+            info!("Computed {} distances in {:.2?}", distances.len(), elapsed);
             
             save_distances(&distances, &output)?;
-            println!("Results saved to {}", output.display());
+            info!("Results saved to {}", output.display());
         },
         
         Commands::QuerySig { query_sig, ref_sig, output, method, threads } => {
@@ -199,18 +213,18 @@ fn main() -> Result<()> {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
             
-            println!("Loading signature files...");
+            info!("Loading signature files...");
             let query_sig_data = read_signatures(query_sig)?;
-            println!("Query signature data loaded");
+            debug!("Query signature data loaded");
             let ref_sig_data = read_signatures(ref_sig)?;
-            println!("Reference signature data loaded");
+            debug!("Reference signature data loaded");
             
-            println!("Preparing data for pairwise Jaccard calculation...");
+            info!("Preparing data for pairwise Jaccard calculation...");
             let (ref_coords, ref_bounds, ref_ids) = load_signatures_for_jaccard(&ref_sig_data)?;
             let (query_coords, query_bounds, query_ids) = load_signatures_for_jaccard(&query_sig_data)?;
             
-            println!("Calculating pairwise Jaccard distances...");
-            println!("Query signatures: {}, Reference signatures: {}", query_ids.len(), ref_ids.len());
+            info!("Calculating pairwise Jaccard distances...");
+            info!("Query signatures: {}, Reference signatures: {}", query_ids.len(), ref_ids.len());
             
             match method.as_str() {
                 "rowwise" | "blocked" => {
@@ -220,15 +234,15 @@ fn main() -> Result<()> {
                         _ => unreachable!(),
                     };
                     
-                    println!("Writing matrix with query and reference IDs...");
+                    info!("Writing matrix with query and reference IDs...");
                     save_query_ref_matrix_csv(&matrix, &query_ids, &ref_ids, output)?;
-                    println!("Results saved to {}", output.display());
+                    info!("Results saved to {}", output.display());
                 }
                 "rowwise-stream" => {
                     let file = File::create(output).context("Failed to create output file")?;
                     let mut writer = csv::Writer::from_writer(BufWriter::new(file));
                     jaccard_distance_matrix_query_vs_ref_stream(&query_coords, &query_bounds, &ref_coords, &ref_bounds, &mut writer, &query_ids, &ref_ids)?;
-                    println!("Results saved to {}", output.display());
+                    info!("Results saved to {}", output.display());
                 }
                 _ => anyhow::bail!("Unknown method: '{}'. Use 'rowwise', 'blocked', or 'rowwise-stream'", method),
             }
@@ -257,18 +271,18 @@ fn main() -> Result<()> {
             println!("Done! Matrix written to {}", output.display());
         },
         
-        Commands::MatrixSig { signatures, output, method, threads, first_n, .. } => {
+        Commands::MatrixSig { signatures, output, method, format, threads, first_n, .. } => {
             if let Some(t) = threads {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
             
-            println!("Loading signature file...");
+            info!("Loading signature file...");
             let sig_data = read_signatures(signatures)?;
             
             // Determine which subset of data to use
             let (subset_coords, subset_bounds, subset_ids) = if let Some(count) = first_n {
                 let n = std::cmp::min(*count, sig_data.kmers.len());
-                println!("Using first {} signatures", n);
+                info!("Using first {} signatures", n);
 
                 let mut sub_coords = Vec::new();
                 let mut sub_bounds = vec![0];
@@ -282,13 +296,17 @@ fn main() -> Result<()> {
 
             } else {
                 // Use all signatures if no subset is specified
-                println!("Using all {} signatures", sig_data.kmers.len());
+                info!("Using all {} signatures", sig_data.kmers.len());
                 let (coords, bounds, ids) = load_signatures_for_jaccard(&sig_data)?;
                 (coords, bounds, ids)
             };
 
+            // Auto-detect format from file extension if not specified
+            let output_format = format.clone().unwrap_or_else(|| detect_format_from_extension(output));
+
             let matrix_size = subset_bounds.len() - 1;
-            println!("Computing {}x{} distance matrix using {} method...", matrix_size, matrix_size, method);
+            info!("Computing {}x{} distance matrix using {} method...", matrix_size, matrix_size, method);
+            info!("Output format: {}", output_format);
             
             match method.as_str() {
                 "upper" | "rowwise" | "blocked" => {
@@ -299,15 +317,36 @@ fn main() -> Result<()> {
                         _ => unreachable!(),
                     };
                     
-                    println!("Writing matrix with sample IDs...");
-                    save_matrix_csv_with_ids(&matrix, &subset_ids, output)?;
-                    println!("Matrix saved to {}", output.display());
+                    info!("Writing matrix with sample IDs...");
+                    match output_format.as_str() {
+                        "csv" => {
+                            save_matrix_csv_with_ids(&matrix, &subset_ids, output)?;
+                        },
+                        "hdf5" => {
+                            save_matrix_hdf5(&matrix, &subset_ids, output)?;
+                        },
+                        "binary" => {
+                            save_matrix_binary_with_ids(&matrix, &subset_ids, output)?;
+                        },
+                        _ => anyhow::bail!("Unknown format: '{}'. Use 'csv', 'hdf5', or 'binary'", output_format),
+                    }
+                    info!("Matrix saved to {}", output.display());
                 }
                 "rowwise-stream" => {
-                    let file = File::create(output).context("Failed to create output file")?;
-                    let mut writer = csv::Writer::from_writer(BufWriter::new(file));
-                    jaccard_distance_matrix_rowwise_stream(&subset_coords, &subset_bounds, &mut writer, &subset_ids)?;
-                    println!("Matrix saved to {}", output.display());
+                    match output_format.as_str() {
+                        "csv" => {
+                            let file = File::create(output).context("Failed to create output file")?;
+                            let mut writer = csv::Writer::from_writer(BufWriter::new(file));
+                            jaccard_distance_matrix_rowwise_stream(&subset_coords, &subset_bounds, &mut writer, &subset_ids)?;
+                        },
+                        "hdf5" => {
+                            let n_cols = subset_bounds.len() - 1;
+                            let mut hdf5_writer = Hdf5StreamWriter::new(output, n_cols, &subset_ids)?;
+                            jaccard_distance_matrix_rowwise_stream_hdf5(&subset_coords, &subset_bounds, &mut hdf5_writer)?;
+                        },
+                        _ => anyhow::bail!("Streaming supports 'csv' and 'hdf5' formats"),
+                    }
+                    info!("Matrix saved to {}", output.display());
                 }
                 _ => anyhow::bail!("Unknown method: '{}'. Use 'upper', 'rowwise', 'blocked', or 'rowwise-stream'", method),
             };
@@ -372,6 +411,7 @@ fn main() -> Result<()> {
 }
 
 // File I/O functions
+// CLI specific, keep here
 fn load_coords(path: &PathBuf) -> Result<Vec<u32>> {
     let file = File::open(path).context("Failed to open coordinates file")?;
     let reader = BufReader::new(file);
@@ -387,6 +427,7 @@ fn load_coords(path: &PathBuf) -> Result<Vec<u32>> {
     Ok(coords)
 }
 
+// ClI specific, keep here
 fn load_bounds(path: &PathBuf) -> Result<Vec<usize>> {
     let file = File::open(path).context("Failed to open bounds file")?;
     let reader = BufReader::new(file);
@@ -400,234 +441,4 @@ fn load_bounds(path: &PathBuf) -> Result<Vec<usize>> {
     }
     
     Ok(bounds)
-}
-
-fn save_distances(distances: &[f32], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    
-    for distance in distances {
-        writeln!(writer, "{:.4}", distance)?;
-    }
-    
-    Ok(())
-}
-
-fn save_matrix_csv(matrix: &[Vec<f32>], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    // Write without IDs (generate simple indices)
-    let n = matrix.len();
-    
-    // Write header row
-    let mut header = vec!["ID".to_string()];
-    for i in 0..n {
-        header.push(format!("sample_{}", i));
-    }
-    writer.write_record(&header)?;
-    
-    // Write matrix rows
-    for (i, row) in matrix.iter().enumerate() {
-        let mut csv_row = vec![format!("sample_{}", i)];
-        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-        writer.write_record(&csv_row)?;
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
-
-fn save_matrix_binary(matrix: &[Vec<f32>], path: &PathBuf) -> Result<()> {
-    use byteorder::{LittleEndian, WriteBytesExt};
-    
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    
-    // Write dimensions
-    writer.write_u32::<LittleEndian>(matrix.len() as u32)?;
-    writer.write_u32::<LittleEndian>(matrix[0].len() as u32)?;
-    
-    // Write matrix data
-    for row in matrix {
-        for &value in row {
-            writer.write_f32::<LittleEndian>(value)?;
-        }
-    }
-    
-    Ok(())
-}
-
-fn save_matrix_json(matrix: &[Vec<f32>], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let writer = BufWriter::new(file);
-    serde_json::to_writer(writer, matrix)?;
-    Ok(())
-}
-
-fn save_similar_pairs(pairs: &[(usize, usize, f32)], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    writer.write_record(&["i", "j", "distance"])?;
-    for (i, j, dist) in pairs {
-        writer.write_record(&[i.to_string(), j.to_string(), format!("{:.4}", dist)])?;
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
-
-// Format conversion functions
-fn convert_from_csv(input: &PathBuf, coords_out: &PathBuf, bounds_out: &PathBuf) -> Result<()> {
-    let file = File::open(input)?;
-    let mut reader = csv::Reader::from_reader(file);
-    
-    let coords_file = File::create(coords_out)?;
-    let mut coords_writer = BufWriter::new(coords_file);
-    
-    let bounds_file = File::create(bounds_out)?;
-    let mut bounds_writer = BufWriter::new(bounds_file);
-    
-    let mut current_pos = 0;
-    writeln!(bounds_writer, "{}", current_pos)?; // Start with 0
-    
-    for result in reader.records() {
-        let record = result?;
-        for field in record.iter() {
-            if !field.trim().is_empty() {
-                writeln!(coords_writer, "{}", field.trim())?;
-                current_pos += 1;
-            }
-        }
-        writeln!(bounds_writer, "{}", current_pos)?;
-    }
-    
-    Ok(())
-}
-
-fn convert_from_fasta(_input: &PathBuf, _coords_out: &PathBuf, _bounds_out: &PathBuf) -> Result<()> {
-    // Implement FASTA to k-mer conversion
-    todo!("FASTA conversion not implemented yet")
-}
-
-fn convert_from_json(_input: &PathBuf, _coords_out: &PathBuf, _bounds_out: &PathBuf) -> Result<()> {
-    // Implement JSON to k-mer conversion
-    todo!("JSON conversion not implemented yet")
-}
-
-fn write_matrix_results(output: &PathBuf, matrix: &[Vec<f32>]) -> Result<()> {
-    save_matrix_csv(matrix, output)
-}
-
-fn write_matrix_results_with_ids(output: &PathBuf, matrix: &[Vec<f32>], ids: &[String]) -> Result<()> {
-    save_matrix_csv_with_ids(matrix, ids, output)
-}
-
-fn write_lsh_results(output: &PathBuf, candidates: &[(usize, usize, f32)]) -> Result<()> {
-    let file = File::create(output)?;
-    let mut writer = BufWriter::new(file);
-    
-    writeln!(writer, "i,j,similarity")?;
-    for &(i, j, similarity) in candidates {
-        writeln!(writer, "{},{},{:.4}", i, j, similarity)?;
-    }
-    
-    Ok(())
-}
-
-fn save_matrix_csv_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    // Write header row (column names)
-    let mut header = vec!["".to_string()];
-    header.extend(ids.iter().cloned());
-    writer.write_record(&header)?;
-    
-    // Write matrix rows with row IDs
-    for (i, row) in matrix.iter().enumerate() {
-        let mut csv_row = vec![ids[i].clone()];
-        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-        writer.write_record(&csv_row)?;
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
-
-// Also update the regular matrix function to include IDs option
-fn save_matrix_csv_with_optional_ids(matrix: &[Vec<f32>], ids: Option<&[String]>, path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    if let Some(sample_ids) = ids {
-        // Write header row (column names)
-        let mut header = vec!["ID".to_string()];
-        header.extend(sample_ids.iter().cloned());
-        writer.write_record(&header)?;
-        
-        // Write matrix rows with row IDs
-        for (i, row) in matrix.iter().enumerate() {
-            let mut csv_row = vec![sample_ids[i].clone()];
-            csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-            writer.write_record(&csv_row)?;
-        }
-    } else {
-        // Write without IDs (old behavior)
-        for row in matrix {
-            let row_str: Vec<String> = row.iter().map(|&x| format!("{:.4}", x)).collect();
-            writer.write_record(&row_str)?;
-        }
-    }
-    
-    writer.flush()?;
-    Ok(())
-}
-
-fn save_matrix_binary_with_ids(matrix: &[Vec<f32>], ids: &[String], path: &PathBuf) -> Result<()> {
-    use byteorder::{LittleEndian, WriteBytesExt};
-    
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    
-    // Write header
-    writer.write_u32::<LittleEndian>(matrix.len() as u32)?; // Matrix size
-    writer.write_u32::<LittleEndian>(4)?; // sizeof(f32)
-    
-    // Write IDs (length-prefixed strings)
-    for id in ids {
-        let id_bytes = id.as_bytes();
-        writer.write_u32::<LittleEndian>(id_bytes.len() as u32)?;
-        writer.write_all(id_bytes)?;
-    }
-    
-    // Write matrix data
-    for row in matrix {
-        for &value in row {
-            writer.write_f32::<LittleEndian>(value)?;
-        }
-    }
-    
-    Ok(())
-}
-
-fn save_query_ref_matrix_csv(matrix: &[Vec<f32>], query_ids: &[String], ref_ids: &[String], path: &PathBuf) -> Result<()> {
-    let file = File::create(path)?;
-    let mut writer = csv::Writer::from_writer(file);
-    
-    // Write header row (column names: empty first column, then reference IDs)
-    let mut header = vec!["".to_string()];
-    header.extend(ref_ids.iter().cloned());
-    writer.write_record(&header)?;
-    
-    // Write matrix rows with query IDs as row labels
-    for (i, row) in matrix.iter().enumerate() {
-        let mut csv_row = vec![query_ids[i].clone()];
-        csv_row.extend(row.iter().map(|&x| format!("{:.4}", x)));
-        writer.write_record(&csv_row)?;
-    }
-    
-    writer.flush()?;
-    Ok(())
 }
