@@ -3,9 +3,10 @@ use std::cmp::Ordering;
 use std::io::{stdout, Write};
 use anyhow::Result;
 use csv;
-use log::{info};
+use log::info;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 pub type CoordType = u32;
 pub type BoundType = usize;
 pub type ScoreType = f32;
@@ -699,6 +700,92 @@ pub fn precompute_similarity_candidates(
             }
         })
         .collect()
+}
+
+/// Complete a partial distance matrix by calculating missing values
+/// Missing values are indicated by NaN -- Given they will be concatenated via numpy
+pub fn complete_partial_matrix(
+    mut matrix: Vec<Vec<ScoreType>>,
+    matrix_ids: &[String],
+    coords: &[CoordType],
+    bounds: &[BoundType], 
+    sig_ids: &[String],
+) -> Result<(Vec<Vec<ScoreType>>, usize)> {
+    let n = matrix.len();
+    
+    if matrix.iter().any(|row| row.len() != n) {
+        anyhow::bail!("Matrix must be square");
+    }
+    
+    // Dimensions need to match
+    if matrix_ids.len() != n {
+        anyhow::bail!("Matrix ID count ({}) doesn't match matrix size ({})", matrix_ids.len(), n);
+    }
+    
+    //And so do sigs
+    if sig_ids.len() != bounds.len() - 1 {
+        anyhow::bail!("Signature ID count ({}) doesn't match bounds length ({})", sig_ids.len(), bounds.len() - 1);
+    }
+    
+    // Map matrix IDs to signature indices
+    let sig_id_to_index: HashMap<String, usize> = sig_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), i))
+        .collect();
+    
+    // Find all missing pairs
+    let mut missing_pairs = Vec::new();
+    
+    for i in 0..n {
+        for j in 0..n {
+            if i != j && matrix[i][j].is_nan() {
+                if let (Some(&sig_i), Some(&sig_j)) = (
+                    sig_id_to_index.get(&matrix_ids[i]),
+                    sig_id_to_index.get(&matrix_ids[j])
+                ) {
+                    missing_pairs.push((i, j, sig_i, sig_j));
+                }
+            }
+        }
+    }
+    
+    let missing_count = missing_pairs.len();
+    info!("Found {} missing distance pairs to calculate", missing_count);
+    
+    if missing_count > 0 {
+        info!("Computing missing distances...");
+        let start_time = std::time::Instant::now();
+        
+        let distances: Vec<(usize, usize, ScoreType)> = missing_pairs
+            .into_par_iter()
+            .map(|(matrix_i, matrix_j, sig_i, sig_j)| {
+                let begin_i = bounds[sig_i];
+                let end_i = bounds[sig_i + 1];
+                let coords_i = &coords[begin_i..end_i];
+                
+                let begin_j = bounds[sig_j];
+                let end_j = bounds[sig_j + 1];
+                let coords_j = &coords[begin_j..end_j];
+                
+                let distance = jaccard_distance_core(coords_i, coords_j);
+                (matrix_i, matrix_j, distance)
+            })
+            .collect();
+        
+        // Update matrix with calculated distances
+        for (i, j, distance) in distances {
+            matrix[i][j] = distance;
+            // Enforce symmetry
+            if i != j {
+                matrix[j][i] = distance;
+            }
+        }
+        
+        info!("Completed {} distance calculations", missing_count);
+    }
+    
+    Ok((matrix, missing_count))
 }
 
 #[cfg(test)]

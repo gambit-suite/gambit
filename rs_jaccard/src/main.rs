@@ -14,7 +14,7 @@ use jaccard::*;
 use signatures::*;
 use matrix_io::{
     detect_format_from_extension,
-    hdf5::{save_matrix as save_matrix_hdf5, StreamWriter as Hdf5StreamWriter},
+    hdf5::{save_matrix as save_matrix_hdf5, load_matrix as load_matrix_hdf5, StreamWriter as Hdf5StreamWriter},
     csv::{save_distances, save_similar_pairs, save_matrix_with_ids as save_matrix_csv_with_ids, 
           save_query_ref_matrix as save_query_ref_matrix_csv, write_lsh_results},
     binary::save_matrix_with_ids as save_matrix_binary_with_ids,
@@ -179,6 +179,19 @@ enum Commands {
         #[arg(long)]
         file: PathBuf,
     },
+    
+    /// Complete partial distance matrix by calculating missing values
+    CompleteMatrix {
+        /// Partial distance matrix with intra-species distances
+        #[arg(long)]
+        partial_matrix: PathBuf,
+        #[arg(long)]
+        signatures: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(short, long)]
+        threads: Option<usize>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -186,7 +199,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     
     match &cli.command {
-        Commands::Query { query, reference, bounds, output, threads, query_idx } => {
+        Commands::Query { query, reference, bounds, output, threads, query_idx: _ } => {
             if let Some(t) = threads {
                 rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
             }
@@ -404,6 +417,27 @@ fn main() -> Result<()> {
         
         Commands::DebugH5 { file } => {
             debug_hdf5_ids(file)?;
+        },
+        
+        Commands::CompleteMatrix { partial_matrix, signatures, output, threads } => {
+            if let Some(t) = threads {
+                rayon::ThreadPoolBuilder::new().num_threads(*t).build_global()?;
+            }
+            
+            info!("Loading partial matrix from {}", partial_matrix.display());
+            let (matrix, matrix_ids) = load_matrix_hdf5(partial_matrix)?;
+            
+            info!("Loading signatures from {}", signatures.display());
+            let sig_data = read_signatures(signatures)?;
+            let (coords, bounds, sig_ids) = load_signatures_for_jaccard(&sig_data)?;
+            
+            let (completed_matrix, missing_count) = complete_partial_matrix(
+                matrix, &matrix_ids, &coords, &bounds, &sig_ids
+            )?;
+            
+            info!("Saving completed matrix to {}", output.display());
+            save_matrix_hdf5(&completed_matrix, &matrix_ids, output)?;
+            info!("Matrix completion finished successfully. Calculated {} missing distances.", missing_count);
         },
     }
     

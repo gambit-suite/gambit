@@ -87,8 +87,6 @@ pub fn save_matrix(
 
 /// Load matrix from HDF5 format
 /// Returns (matrix, genome_ids)
-/// Use only for testing, don't want compiler to complain
-#[cfg(test)]
 pub fn load_matrix(input_path: &Path) -> Result<(Vec<Vec<ScoreType>>, Vec<String>)> {
     info!("Loading matrix and genome IDs from HDF5 file: {}", input_path.display());
     let file = Hdf5File::open(input_path)
@@ -101,18 +99,22 @@ pub fn load_matrix(input_path: &Path) -> Result<(Vec<Vec<ScoreType>>, Vec<String
     
     let ids_dataset = file.dataset("genome_ids")
         .context("Failed to open 'genome_ids' dataset")?;
-    let ascii_ids = ids_dataset.read_1d::<hdf5::types::VarLenAscii>()
-        .context("Failed to read genome IDs")?;
     
     // Convert to Vec<Vec<f32>> format
     let matrix: Vec<Vec<ScoreType>> = matrix_array.outer_iter()
         .map(|row| row.to_vec())
         .collect();
     
-    // Convert ASCII IDs to String
-    let ids: Vec<String> = ascii_ids.iter()
-        .map(|ascii_id| ascii_id.to_string())
-        .collect();
+    // Read genome IDs, trying both ASCII and Unicode string formats
+    let ids: Vec<String> = if let Ok(ascii_ids) = ids_dataset.read_1d::<hdf5::types::VarLenAscii>() {
+        ascii_ids.iter().map(|ascii_id| {
+            String::from_utf8_lossy(ascii_id.as_bytes()).to_string()
+        }).collect()
+    } else if let Ok(unicode_ids) = ids_dataset.read_1d::<hdf5::types::VarLenUnicode>() {
+        unicode_ids.iter().map(|unicode_id| unicode_id.to_string()).collect()
+    } else {
+        return Err(anyhow::anyhow!("Failed to read genome IDs in any supported format"));
+    };
     
     // Validate consistency
     let n = matrix.len();
